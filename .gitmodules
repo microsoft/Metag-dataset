@@ -1,0 +1,3 @@
+[submodule "PDF-Diff-Viewer"]
+	path = PDF-Diff-Viewer
+	url = https://github.com/ssibb/PDF-Diff-Viewer.git
