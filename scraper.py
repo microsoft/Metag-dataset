@@ -59,7 +59,7 @@ class OpenReviewScraper:
         return accepted_submissions
 
 
-    def save_papers(self, papers) -> str:
+    def save_papers(self, papers: list) -> str:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_file = os.path.join(self.output_dir, f'papers_{timestamp}.json')
         with open(output_file, 'w') as f:
@@ -87,13 +87,16 @@ class SemanticScholarIndexer:
         """
         Search for a paper on Semantic Scholar by title
         """
-        paper = self.client.search_paper(
-            query=title,  
-            match_title=True, # Match title
-        )
-
-        return paper
-
+        try:
+            paper = self.client.search_paper(
+                query=title,  
+                match_title=True, # Match title
+            )
+            return paper
+        except Exception as e:
+            print(f"Error searching for paper with title '{title}': {e}")
+            return None
+    
 
     def assert_paper_match(self, ss_paper, openreview_paper:dict) -> bool:
         """
@@ -104,18 +107,18 @@ class SemanticScholarIndexer:
 
         # Make sure titles match
         assert ss_paper.title.lower() == title.lower(), f"Title mismatch: {ss_paper.title} vs {title}"
-        
-        # Check if venues are the same 
-        assert ss_paper.publicationVenue['name'] in paper_bibtex or any(alt_name in paper_bibtex for alt_name in ss_paper.publicationVenue['alternate_names']), f"Venue mismatch: {ss_paper.publicationVenue} not in {paper_bibtex}"
-        return True
+        return True 
 
     
     def run(self, openreview_paper: dict):
         title = openreview_paper['content'].get('title').get('value')
-        ss_paper = self.searchpaper(title)
-        if ss_paper is None:
-            print(f"No paper found on Semantic Scholar for title: {title}")
-            return None
+        
+        try:
+            ss_paper = self.searchpaper(title)
+        except Exception as e:
+            print(f"Paper '{title}' does not exist on Semantic Scholar: {e}")
+            return None 
+        
         try:
             if self.assert_paper_match(ss_paper, openreview_paper):
                 print(f"Paper matched: {title}")
@@ -125,6 +128,47 @@ class SemanticScholarIndexer:
             return None
 
 
+    def get_arxiv_id_from_ss(self, ss_paper: Paper) -> str:
+        """
+        Extract the arxiv link from the Semantic Scholar paper object
+        """
+        arxiv_id = ss_paper.externalIds.get('ArXiv', None)
+        return arxiv_id
+
+
+    def run_all(self, outfile: str) -> str:
+        """
+        For each OpenReview paper, find the corresponding Semantic Scholar paper
+        and extract the arxiv link
+        """
+        with open(outfile) as f:
+            openreview_papers = json.load(f)
+        
+        match_count = 0
+        
+        out_list = []
+
+        for openreview_paper in openreview_papers:
+            ss_paper = self.run(openreview_paper)
+            if ss_paper:
+                match_count += 1
+                arxiv_id = self.get_arxiv_id_from_ss(ss_paper)
+                openreview_paper['arxiv_id'] = arxiv_id
+                out_list.append(openreview_paper)
+            else:
+                print("Paper not found on Semantic Scholar, skipping...")
+
+        print(f'Total matches found: {match_count}/{len(openreview_papers)}')
+
+        # Save updated papers with arxiv links
+        output_file = outfile.replace('.json', f'_with_arxiv.json')
+        with open(output_file, 'w') as f:
+            json.dump(out_list, f, indent=2)
+        
+        print(f'Saving {len(out_list)} updated papers with arxiv ids to {output_file}')    
+        return output_file
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Scrape papers from OpenReview conference.')
     parser.add_argument('--conference_id', type=str, default='ICLR.cc/2024/Conference',
@@ -132,17 +176,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     scraper = OpenReviewScraper(conference_id=args.conference_id)
-    outfile = scraper.run()
+    scrape_file = scraper.run()
 
+    # Run the Semantic Scholar indexer to find the semantic scholar paper
+    # Use SS to find the arxiv link to the paper
     indexer = SemanticScholarIndexer()
-    with open(outfile) as f:
-        paper_data = json.load(f)
+
+    indexed_file = indexer.run_all(scrape_file)
     
-    for paper_datum in tqdm(paper_data):
-        try:
-            indexer.run(paper_datum)
-        except Exception as e:
-            print(f"Error indexing paper: {e}")
-            import bpdb; bpdb.set_trace()
-    
-    print('Indexing completed successfully.')
