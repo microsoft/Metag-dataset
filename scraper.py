@@ -629,5 +629,10 @@ if __name__ == '__main__':
             for arxiv_path, openreview_path, paper in zip(output_paths_arxiv, output_paths_openreview, json.load(open(pdf_input))):
                 paper['arxiv_pdf_path'] = arxiv_path
                 paper['openreview_pdf_path'] = openreview_path
+            
+            # Save updated JSON
+            updated_output_file = pdf_input.replace('.json', '_with_pdfs.json')
+            with open(updated_output_file, 'w') as f:
+                json.dump(json.load(open(pdf_input)), f, indent=2)
 
     
