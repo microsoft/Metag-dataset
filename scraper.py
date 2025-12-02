@@ -73,12 +73,84 @@ class OpenReviewScraper:
         print(f'Saved {len(papers)} papers to {output_file}')
         return output_file
 
+
     def run(self) -> str:
         print(f'Scraping papers from {self.conference_id}...')
         papers = self.fetch_papers()
         output_file = self.save_papers(papers)
         print('Scraping completed.')
         return output_file
+
+
+    def download_papers(self, input_file: str):
+        """
+        Download PDFs for papers from the openreview scrape using authenticated client
+        Args:
+            input_file: Path to the JSON file containing paper metadata from OpenReview
+        """
+        # Use authenticated client for better rate limits
+        client = openreview.api.OpenReviewClient(
+            baseurl='https://api2.openreview.net',
+            username=self.username,
+            password=self.password
+        )
+
+        with open(input_file, 'r') as f:
+            papers = json.load(f)
+        
+        output_dir = os.path.join(os.path.dirname(input_file), 'PDFs')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_paths = []
+
+        for paper in tqdm(papers, desc="Downloading OpenReview PDFs", position=1, leave=True):
+            paper_id = paper['id']
+            
+            # Add retry logic for rate limiting and connection errors
+            max_retries = 5
+            retry_delay = 3
+            success = False
+            
+            for attempt in range(max_retries):
+                try:
+                    # Use client's get_pdf method - handles auth automatically
+                    pdf_binary = client.get_pdf(paper_id)
+                    
+                    output_path = os.path.join(output_dir, f'{paper_id}_openreview.pdf')
+                    with open(output_path, 'wb') as f:
+                        f.write(pdf_binary)
+                    
+                    output_paths.append(output_path)
+                    tqdm.write(f'Downloaded PDF for {paper_id} to {output_path}')
+                    # Small delay to be respectful of API
+                    time.sleep(0.5)
+                    success = True
+                    break
+                    
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    # Check for retryable errors: rate limit, connection issues, incomplete reads
+                    is_retryable = (
+                        '429' in error_msg or 
+                        'rate limit' in error_msg or
+                        'incompleteread' in error_msg or
+                        'connection' in error_msg or
+                        'timeout' in error_msg or
+                        'broken' in error_msg
+                    )
+                    
+                    if is_retryable and attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        tqdm.write(f'Error for {paper_id}: {e}. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})')
+                        time.sleep(wait_time)
+                    else:
+                        tqdm.write(f'Failed to download PDF for {paper_id} after {attempt + 1} attempts: {e}')
+                        break
+            
+            if not success:
+                output_paths.append(None)
+                    
+        return output_dir, output_paths
 
 
 class SemanticScholarIndexer:
@@ -262,21 +334,300 @@ class SemanticScholarIndexer:
         return output_file
 
 
+class ArxivPDFDownloader:
+    """
+    Download PDFs from arxiv
+    """
+
+    def __init__(self):
+        pass
+    
+
+    def get_arxiv_versions(self, arxiv_id: str) -> list:
+        """
+        Get all versions of an arxiv paper using the arxiv API
+        Returns a list of version dictionaries with 'version' and 'created' fields
+        """
+        
+        # Remove version suffix if present (e.g., '2301.12345v2' -> '2301.12345')
+        base_arxiv_id = arxiv_id.split('v')[0] if 'v' in arxiv_id else arxiv_id
+        
+        try:
+            return self._scrape_arxiv_versions(base_arxiv_id)
+            
+        except Exception as e:
+            tqdm.write(f"Error fetching arxiv versions for {arxiv_id}: {e}")
+            return []
+    
+
+    def _scrape_arxiv_versions(self, base_arxiv_id: str) -> list:
+        """
+        Scrape version history from arxiv website
+        Returns list of dicts with 'version' (e.g., 'v1', 'v2') and 'submitted' (datetime string)
+        """
+        import re
+        from bs4 import BeautifulSoup
+        
+        url = f'https://arxiv.org/abs/{base_arxiv_id}'
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Find the version history section
+            version_section = soup.find('div', class_='submission-history')
+            
+            if not version_section:
+                tqdm.write(f"No version history found for {base_arxiv_id}")
+                return []
+            
+            versions = []
+            # Get the full text content
+            text = version_section.get_text()
+            
+            # Pattern: [v1] Wed, 24 May 2023 14:52:56 UTC
+            # The text contains line breaks between versions
+            pattern = r'\[v(\d+)\]\s+\w+,\s+(\d+\s+\w+\s+\d{4})\s+[\d:]+\s+UTC'
+            matches = re.findall(pattern, text)
+            
+            for match in matches:
+                version_num = match[0]
+                date_str = match[1]
+                
+                # Parse date
+                date_obj = datetime.strptime(date_str, '%d %b %Y')
+                
+                versions.append({
+                    'version': f'v{version_num}',
+                    'submitted': date_obj,
+                    'yymm': date_obj.strftime('%y%m')
+                })
+            
+            return versions
+            
+        except Exception as e:
+            tqdm.write(f"Error scraping arxiv versions for {base_arxiv_id}: {e}")
+            return []
+
+
+    def get_version_before_submission(self, arxiv_id: str, submission_date_ms: int) -> Optional[str]:
+        """
+        For a paper with multiple arxiv versions, find the version submitted before 
+        the conference submission date
+        
+        Args:
+            arxiv_id: The arxiv ID (may include version like '2301.12345v2')
+            submission_date_ms: Submission date in milliseconds since epoch (from OpenReview cdate)
+        
+        Returns:
+            The arxiv ID with version suffix (e.g., '2301.12345v1') or None if no suitable version
+        """
+        base_arxiv_id = arxiv_id.split('v')[0] if 'v' in arxiv_id else arxiv_id
+        
+        # Convert submission date to datetime
+        submission_date = datetime.fromtimestamp(submission_date_ms / 1000)
+        
+        # Get all versions
+        versions = self.get_arxiv_versions(base_arxiv_id)
+        
+        if not versions:
+            # If we can't get version info, return the original ID
+            return arxiv_id
+        
+        # Find the latest version submitted before the submission date
+        suitable_versions = [
+            v for v in versions 
+            if v['submitted'] <= submission_date
+        ]
+        
+        if not suitable_versions:
+            # No version before submission date, return earliest version
+            # earliest = min(versions, key=lambda x: x['submitted'])
+            tqdm.write(f"No arxiv version before submission date {submission_date.strftime('%Y-%m-%d')} for {base_arxiv_id}.")
+            return None
+        
+        # Get the latest version that's still before submission
+        latest_suitable = max(suitable_versions, key=lambda x: x['submitted'])
+        tqdm.write(f"Found arxiv {base_arxiv_id}{latest_suitable['version']} (submitted {latest_suitable['submitted'].strftime('%Y-%m-%d')}) before conference submission {submission_date.strftime('%Y-%m-%d')}")
+        return f"{base_arxiv_id}{latest_suitable['version']}"
+
+
+    def download_pdf(self, arxiv_id, output_dir, paper_id, submission_date_ms: Optional[int] = None):
+        """
+        Download the PDF for a given arxiv ID
+        
+        Args:
+            arxiv_id: The arxiv ID
+            output_dir: Directory to save the PDF
+            paper_id: The paper ID for naming
+            submission_date_ms: Optional submission date in milliseconds to download version before submission
+        """
+        # If submission date provided, find the appropriate version
+        if submission_date_ms:
+            arxiv_id = self.get_version_before_submission(arxiv_id, submission_date_ms)
+            if not arxiv_id:
+                # tqdm.write(f"Could not determine appropriate arxiv version for paper {paper_id}")
+                return None
+        
+        pdf_url = f'https://arxiv.org/pdf/{arxiv_id}.pdf'
+        response = requests.get(pdf_url)
+        if response.status_code == 200:
+            output_path = os.path.join(output_dir, f'{paper_id}_arxiv_{arxiv_id}.pdf')
+            with open(output_path, 'wb') as f:
+                f.write(response.content)
+            tqdm.write(f'Downloaded arxiv PDF for {arxiv_id} to {output_path}')
+            return output_path
+        else:
+            tqdm.write(f'Failed to download arxiv PDF for {arxiv_id}, status code {response.status_code}')
+            return None
+
+
+    def download_all_papers(self, json_file: str, output_dir: str = None, use_submission_date: bool = True):
+        """
+        Download PDFs for all papers in a JSON file with arxiv IDs
+        
+        Args:
+            json_file: Path to JSON file containing papers with arxiv_id field
+            output_dir: Directory to save PDFs (defaults to same directory as json_file + '/pdfs')
+            use_submission_date: If True, downloads the arxiv version before submission date
+        """
+        # Load papers from JSON
+        with open(json_file, 'r') as f:
+            papers = json.load(f)
+        
+        # Set output directory
+        if output_dir is None:
+            output_dir = os.path.join(os.path.dirname(json_file), 'PDFs')
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        successful_downloads = 0
+        failed_downloads = 0
+        output_paths = []  # Moved outside loop
+        
+        for paper in tqdm(papers, desc="Downloading arXiv PDFs", position=0, leave=True):
+            arxiv_id = paper.get('arxiv_id')
+            paper_id = paper.get('id')
+            
+            if not arxiv_id:
+                tqdm.write(f"Skipping paper {paper_id}: No arxiv_id found")
+                failed_downloads += 1
+                output_paths.append(None)
+                continue
+            
+            # Get submission date if using version control
+            # cdate is the date from OpenReview in milliseconds that represents when the note was created
+            submission_date_ms = paper.get('cdate') if use_submission_date else None
+
+            try:
+                result = self.download_pdf(arxiv_id, output_dir, paper_id, submission_date_ms)
+                if result:
+                    successful_downloads += 1
+                    output_paths.append(result)
+                else:
+                    failed_downloads += 1
+                    output_paths.append(None)
+            except Exception as e:
+                tqdm.write(f"Error downloading PDF for paper {paper_id} (arxiv: {arxiv_id}): {e}")
+                failed_downloads += 1
+                output_paths.append(None)
+        
+        print(f"\nDownload summary:")
+        print(f"  Successful: {successful_downloads}")
+        print(f"  Failed: {failed_downloads}")
+        print(f"  Total: {len(papers)}")
+        print(f"  PDFs saved to: {output_dir}")
+        
+        return output_dir, output_paths
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Scrape papers from OpenReview conference.')
     parser.add_argument('--conference_id', type=str, default='ICLR.cc/2024/Conference',
                         help='The conference ID to scrape papers from (default: ICLR.cc/2024/Conference)')
+    
+    parser.add_argument('--dont_scrape', action='store_true',
+                        help="Don't scrape from OpenReview, use existing scrape file.")
+    parser.add_argument('--scrape_file', type=str, default=None,
+                        help='Path to an existing scrape file if not scraping anew.')
+    
+    parser.add_argument('--dont_index', action='store_true',
+                        help="Don't perform indexing on Semantic Scholar to find arxiv links.")
+    parser.add_argument('--index_file', type=str, default=None,
+                        help='Path to an existing indexed file if not indexing anew.')
+    
+    parser.add_argument('--dont_download_pdfs', action='store_true',
+                        help="Don't download arxiv PDFs for papers in the indexed file.")
+    parser.add_argument('--pdf_input_file', type=str, default=None,
+                        help='Path to JSON file with arxiv_id field to download PDFs from.')
+    
+    parser.add_argument('--pdf_output_dir', type=str, default=None,
+                        help='Directory to save downloaded PDFs (defaults to input directory + /pdfs).')
+    
     args = parser.parse_args()
 
     if 'ICLR' in args.conference_id:
         venue = 'ICLR'
+    
+    if '2024' in args.conference_id:
+        year = '2024'
 
-    scraper = OpenReviewScraper(conference_id=args.conference_id)
-    scrape_file = scraper.run()
+    if args.dont_scrape:
+        scrape_file = args.scrape_file
+    else: # Perform scraping 
+        scraper = OpenReviewScraper(conference_id=args.conference_id)
+        scrape_file = scraper.run()
+        
 
     # Run the Semantic Scholar indexer to find the semantic scholar paper
     # Use SS to find the arxiv link to the paper
-    indexer = SemanticScholarIndexer(venue=venue)
+    if args.dont_index:
+        indexed_file = args.index_file
+    else:  # Perform indexing
+        indexer = SemanticScholarIndexer(venue=venue)
+        indexed_file = asyncio.run(indexer.run_all(scrape_file))
+    
+    # Download PDFs from arXiv if requested
+    if args.dont_download_pdfs:
+        pass
+    else:
+        print("Starting PDF download...")
+        pdf_input = args.pdf_input_file if args.pdf_input_file else indexed_file
+        if pdf_input is None:
+            print("Error: No input file specified for PDF download. Use --pdf_input_file or run indexing first.")
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            downloader = ArxivPDFDownloader()
+            scraper = OpenReviewScraper(conference_id=args.conference_id)
+            use_submission_date = True  # Always use submission date to get the version before submission
+            
+            # Run both downloads in parallel
+            print("Starting parallel PDF downloads from arXiv and OpenReview...")
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit both download tasks
+                arxiv_future = executor.submit(
+                    downloader.download_all_papers,
+                    pdf_input,
+                    output_dir=args.pdf_output_dir,
+                    use_submission_date=use_submission_date
+                )
+                openreview_future = executor.submit(
+                    scraper.download_papers,
+                    pdf_input
+                )
+                
+                # Wait for both to complete and get results
+                output_dir, output_paths_arxiv = arxiv_future.result()
+                output_dir_openreview, output_paths_openreview = openreview_future.result()
+            
+            print("Parallel downloads completed.")
 
-    indexed_file = asyncio.run(indexer.run_all(scrape_file))
+            # Update the input file JSON with the openreview and arxiv PDF paths
+            assert len(output_paths_arxiv) == len(output_paths_openreview), "Mismatch in number of downloaded PDFs"
+            for arxiv_path, openreview_path, paper in zip(output_paths_arxiv, output_paths_openreview, json.load(open(pdf_input))):
+                paper['arxiv_pdf_path'] = arxiv_path
+                paper['openreview_pdf_path'] = openreview_path
+
     
