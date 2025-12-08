@@ -563,7 +563,7 @@ if __name__ == '__main__':
                         help='Path to JSON file with arxiv_id field to download PDFs from.')
     
     parser.add_argument('--pdf_output_dir', type=str, default=None,
-                        help='Directory to save downloaded PDFs (defaults to input directory + /pdfs).')
+                        help='Directory to save downloaded PDFs (defaults to input directory + /PDFs).')
     
     args = parser.parse_args()
 
