@@ -20,8 +20,6 @@ def extract_diffs(edits_list: list[dict]) -> list[dict]:
 
 
 
-
-
 if __name__ == "__main__":
     parser = ArgumentParser(description="Extract diffs between two PDF files and save as JSON.")
     parser.add_argument("--input-file", type=str, required=True, help="Path to the input JSON file containing paper metadata.")
