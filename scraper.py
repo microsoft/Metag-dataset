@@ -305,7 +305,7 @@ class OpenReviewScraper:
         
         # Save results
         if output_file is None:
-            output_file = input_file.replace('.json', '_dialogues.json')
+            output_file = input_file.replace('.json', '_with_dialogues.json')
         
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)

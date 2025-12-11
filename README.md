@@ -6,7 +6,7 @@ sudo apt install python3-tk
 ```
 uv venv review-env --python 3.12.3
 source review-env/bin/activate
- uv pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 
@@ -21,5 +21,10 @@ export OPENREVIEW_PASSWORD=<openreview-password>
 Request a key: https://www.semanticscholar.org/product/api#api-key 
 export SEMANTICSCHOLAR_API_KEY=<ss-api-key>
 
-
+### Execution
+```
+python scraper.py
+python dialogue_diff.py
+python data_preparer.py
+```
 
