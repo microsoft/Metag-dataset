@@ -4,9 +4,13 @@ import logging
 import os
 from argparse import ArgumentParser
 from itertools import product
+from inference import InferenceConfig, HuggingFaceInference, UnslothInference
 
 # Load filtering prompt template once at module level for efficiency
 _FILTERING_PROMPT_TEMPLATE = None
+
+# Load a prompt for filtering action items from reviews
+_REVIEW_ACTION_ITEMS_PROMPT = None
 
 def get_filtering_prompt_template() -> str:
     """Load and cache the filtering prompt template from file."""
@@ -16,6 +20,16 @@ def get_filtering_prompt_template() -> str:
         with open(prompt_path, 'r') as f:
             _FILTERING_PROMPT_TEMPLATE = f.read()
     return _FILTERING_PROMPT_TEMPLATE
+
+
+def get_review_action_items_prompt() -> str:
+    """Load and cache the review action items prompt from file."""
+    global _REVIEW_ACTION_ITEMS_PROMPT
+    if _REVIEW_ACTION_ITEMS_PROMPT is None:
+        prompt_path = os.path.join(os.path.dirname(__file__), 'prompts', '1_extract_review_action_items.txt')
+        with open(prompt_path, 'r') as f:
+            _REVIEW_ACTION_ITEMS_PROMPT = f.read()
+    return _REVIEW_ACTION_ITEMS_PROMPT
 
 
 def build_prompt(diff: dict, dialogue: dict) -> str:
@@ -40,13 +54,21 @@ def build_prompt(diff: dict, dialogue: dict) -> str:
     review_content = dialogue.get('review', {})
     if isinstance(review_content, dict):
         review_text = review_content.get('content', review_content)
+        review_text_relevant = review_text.get('weaknesses', '').get('value','') + "\n" + review_text.get('questions', '').get('value','')
     else:
         review_text = review_content
+        
     
     # Extract dialogue content
     dialogue_content = dialogue.get('dialogue', [])
+
     if isinstance(dialogue_content, list):
-        dialogue_text = json.dumps(dialogue_content, indent=2)
+        dialogue_parts = []
+        for item in dialogue_content:
+            content = item.get('content', {})
+            comment_value = content.get('comment', {}).get('value', '') if isinstance(content, dict) else ''
+            dialogue_parts.append(comment_value)
+        dialogue_text = "\n".join(dialogue_parts)
     else:
         dialogue_text = str(dialogue_content)
     
@@ -55,17 +77,69 @@ def build_prompt(diff: dict, dialogue: dict) -> str:
 ## Input
 
 ### Review
-{review_text}
+{review_text_relevant}
 
 ### Dialogue
 {dialogue_text}
 
 ### Diff
 - **Change Type**: {diff.get('tag', 'unknown')}
+- **Original Text**: {diff.get('text_pdf1', '')}
+- **Revised Text**: {diff.get('text_pdf2', '')}
 - **Original Context**: {diff.get('context_pdf1', '')}
 - **Revised Context**: {diff.get('context_pdf2', '')}
 
 ## Output"""
+
+    return base_prompt + prompt_addition
+
+
+def build_action_items_prompt(dialogue: dict) -> str:
+    """
+    Build a prompt to extract action items from the review dialogue.
+    
+    Args:
+        dialogue: Dictionary containing dialogue information with keys:
+            - review: The original review content
+            - dialogue: The back-and-forth dialogue
+    
+    Returns:
+        Complete prompt string ready for LLM inference
+    """
+    base_prompt = get_review_action_items_prompt()
+    
+    # Extract review content - handle nested structure
+    review_content = dialogue.get('review', {})
+    if isinstance(review_content, dict):
+        review_text = review_content.get('content', review_content)
+        review_text_relevant = review_text.get('weaknesses', '').get('value','') + "\n" + review_text.get('questions', '').get('value','')
+    else:
+        review_text = review_content
+
+    # Extract dialogue content
+    dialogue_content = dialogue.get('dialogue', [])
+
+    if isinstance(dialogue_content, list):
+        dialogue_parts = []
+        for item in dialogue_content:
+            content = item.get('content', {})
+            comment_value = content.get('comment', {}).get('value', '') if isinstance(content, dict) else ''
+            dialogue_parts.append(comment_value)
+        dialogue_text = "\n".join(dialogue_parts)
+    else:
+        dialogue_text = str(dialogue_content)
+    
+    # Build the input section
+    prompt_addition = f"""
+    ## Input
+
+    ### Review
+    {review_text_relevant}
+
+    ### Dialogue
+    {dialogue_text}
+
+    ## Output"""
 
     return base_prompt + prompt_addition
 
@@ -81,7 +155,7 @@ def prepare_dataset(papers_json: list[dict]) -> list[dict]:
     for datum in papers_json:
         paper_id = datum.get('id', 'unknown')
         diffs = datum.get('diffs', [])
-        dialogues = datum.get('dialogues', [])
+        dialogues = datum.get('dialogue', [])
         
         # Generate all diff-dialogue pairs
         for diff, dialogue in product(diffs, dialogues):
@@ -89,10 +163,28 @@ def prepare_dataset(papers_json: list[dict]) -> list[dict]:
             prepared_data.append({
                 'paper_id': paper_id,
                 'prompt': prompt,
-                'diff': diff,
-                'dialogue': dialogue
             })
+            
+    return prepared_data
+
+
+def prepare_review_action_items_dataset(papers_json: list[dict]) -> list[dict]:
+    """
+    Prepare the dataset by splitting each datum into an opcode-dialogue pair
+    """
+    # Pre-load the filtering prompt template once
+    get_review_action_items_prompt()
     
+    prepared_data = []
+    for datum in papers_json:
+        paper_id = datum.get('id', 'unknown')
+        dialogues = datum.get('dialogue', [])
+        for dialogue in dialogues:
+            prepared_data.append({
+                'paper_id': paper_id,
+                'prompt': build_action_items_prompt(dialogue),
+            })
+        
     return prepared_data
 
 
@@ -101,6 +193,7 @@ if __name__ == "__main__":
     parser.add_argument("--input-file", type=str, required=True, help="Path to the input JSON file containing paper metadata with dialogues.")
     parser.add_argument("--output-file", type=str, help="Path to the output JSON file to save the prepared dataset.")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR).")
+    parser.add_argument("--expt", type=str, choices=["filtering", "review_action_items"], default="review_action_items", help="Type of experiment to prepare dataset for.")
     args = parser.parse_args()
     
     # Set up logging
@@ -112,11 +205,27 @@ if __name__ == "__main__":
         papers_json = json.load(f)
     
     # Prepare dataset
-    prepared_json = prepare_dataset(papers_json)
+    if args.expt == "filtering":
+        prepared_data = prepare_dataset(papers_json)
+    elif args.expt == "review_action_items":
+        prepared_data = prepare_review_action_items_dataset(papers_json)
+    else:
+        raise NotImplementedError(f"Unknown experiment type: {args.expt}")
+    # import bpdb; bpdb.set_trace()
+
+    config = InferenceConfig.from_yaml("config.yaml")
+
+    # prompt_subset = [item['prompt'] for item in prepared_data[:5]]  # Test on first 5 prompts
+    prompts = [item['prompt'] for item in prepared_data]
+    # inference = HuggingFaceInference(config)
+    inference = UnslothInference(config)
+    responses = inference.generate_batch(prompts, batch_size=4)
+
+    import bpdb; bpdb.set_trace()
     
     # Save output JSON
     output_file = args.output_file if args.output_file else args.input_file.replace('.json', '_prepared.json')
     with open(output_file, 'w') as f:
-        json.dump(prepared_json, f, indent=2)
+        json.dump(prepared_data, f, indent=2)
     
     logger.info(f"Prepared dataset saved to: {output_file}")
