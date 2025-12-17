@@ -4,7 +4,9 @@ import logging
 import os
 from argparse import ArgumentParser
 from itertools import product
-from inference import InferenceConfig, HuggingFaceInference, UnslothInference
+from inference import InferenceConfig, HuggingFaceInference, VLLMInference, UnslothInference
+from tqdm import tqdm
+import utils 
 
 # Load filtering prompt template once at module level for efficiency
 _FILTERING_PROMPT_TEMPLATE = None
@@ -211,16 +213,24 @@ if __name__ == "__main__":
         prepared_data = prepare_review_action_items_dataset(papers_json)
     else:
         raise NotImplementedError(f"Unknown experiment type: {args.expt}")
-    # import bpdb; bpdb.set_trace()
 
     config = InferenceConfig.from_yaml("config.yaml")
 
-    # prompt_subset = [item['prompt'] for item in prepared_data[:5]]  # Test on first 5 prompts
     prompts = [item['prompt'] for item in prepared_data]
-    # inference = HuggingFaceInference(config)
-    inference = UnslothInference(config)
-    responses = inference.generate_batch(prompts, batch_size=4)
-
+    
+    # Use VLLMInference with Docker-based server
+    # Set auto_start_server=False if vLLM server is already running
+    with VLLMInference(config, auto_start_server=True) as inference:
+        responses = inference.generate(prompts, batch_size=config.batch_size)
+        
+        for i, response in enumerate(responses):
+            try:
+                json_response = utils.parse_json_response(response)
+                prepared_data[i]['response'] = json_response
+            except Exception as e:
+                logger.error(f"Error parsing response for prompt {i}: {e}")
+                prepared_data[i]['response'] = ''
+        
     import bpdb; bpdb.set_trace()
     
     # Save output JSON

@@ -25,6 +25,31 @@ export SEMANTICSCHOLAR_API_KEY=<ss-api-key>
 ```
 python scraper.py
 python dialogue_diff.py
-python data_preparer.py
+python data_preparer_filtering.py
 ```
+
+
+### Install PyTorch
+```
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
+
+
+### Install vLLM
+Use docker to run vLLM: 
+```
+docker pull vllm/vllm-openai:latest
+```
+
+Then, the inference code will send prompts to vLLM using:
+```
+docker run --runtime nvidia --gpus all \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    --env "HF_TOKEN=$HF_TOKEN" \
+    -p 8000:8000 \
+    --ipc=host \
+    vllm/vllm-openai:latest \
+    --model <model-name>
+```
+
 

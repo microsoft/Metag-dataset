@@ -85,11 +85,12 @@ class OpenReviewScraper:
         return output_file
 
 
-    def download_papers(self, input_file: str):
+    def download_papers(self, input_file: str, output_dir: str = None):
         """
         Download PDFs for papers from the openreview scrape using authenticated client
         Args:
             input_file: Path to the JSON file containing paper metadata from OpenReview
+            output_dir: Directory to save PDFs (defaults to same directory as input_file + '/PDFs')
         """
         # Use authenticated client for better rate limits
         client = self.client
@@ -97,7 +98,8 @@ class OpenReviewScraper:
         with open(input_file, 'r') as f:
             papers = json.load(f)
         
-        output_dir = os.path.join(os.path.dirname(input_file), 'PDFs')
+        if output_dir is None:
+            output_dir = os.path.join(os.path.dirname(input_file), 'PDFs')
         os.makedirs(output_dir, exist_ok=True)
         
         output_paths = []
@@ -593,8 +595,10 @@ class ArxivPDFDownloader:
         versions = self.get_arxiv_versions(base_arxiv_id)
         
         if not versions:
-            # If we can't get version info, return the original ID
-            return arxiv_id
+            # If we can't get version info, skip this paper to avoid downloading
+            # a version that may have been submitted after the conference deadline
+            tqdm.write(f"Could not fetch version history for {base_arxiv_id}, skipping to avoid post-submission version")
+            return None
         
         # Find the latest version submitted before the submission date
         suitable_versions = [
@@ -776,7 +780,8 @@ if __name__ == '__main__':
                 )
                 openreview_future = executor.submit(
                     scraper.download_papers,
-                    pdf_input
+                    pdf_input,
+                    output_dir=args.pdf_output_dir
                 )
                 
                 # Wait for both to complete and get results
