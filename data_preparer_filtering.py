@@ -170,15 +170,15 @@ def prepare_dataset(papers_json: list[dict]) -> list[dict]:
     return prepared_data
 
 
-def prepare_review_action_items_dataset(papers_json: list[dict]) -> list[dict]:
+def prepare_review_action_items_dataset(input_data: dict) -> list[dict]:
     """
-    Prepare the dataset by splitting each datum into an opcode-dialogue pair
+    Prepare the dataset by extracting the review action items from dialogues
     """
     # Pre-load the filtering prompt template once
     get_review_action_items_prompt()
     
     prepared_data = []
-    for datum in papers_json:
+    for datum in input_data.values():
         paper_id = datum.get('id', 'unknown')
         dialogues = datum.get('dialogue', [])
         for dialogue in dialogues:
@@ -204,18 +204,17 @@ if __name__ == "__main__":
     
     # Load input JSON
     with open(args.input_file, 'r') as f:
-        papers_json = json.load(f)
+        input_data = json.load(f)
     
     # Prepare dataset
     if args.expt == "filtering":
-        prepared_data = prepare_dataset(papers_json)
+        prepared_data = prepare_dataset(input_data)
     elif args.expt == "review_action_items":
-        prepared_data = prepare_review_action_items_dataset(papers_json)
+        prepared_data = prepare_review_action_items_dataset(input_data)
     else:
         raise NotImplementedError(f"Unknown experiment type: {args.expt}")
 
     config = InferenceConfig.from_yaml("config.yaml")
-
     prompts = [item['prompt'] for item in prepared_data]
     
     # Use VLLMInference with Docker-based server
@@ -230,12 +229,15 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error(f"Error parsing response for prompt {i}: {e}")
                 prepared_data[i]['response'] = ''
-        
-    import bpdb; bpdb.set_trace()
     
     # Save output JSON
     output_file = args.output_file if args.output_file else args.input_file.replace('.json', '_prepared.json')
     with open(output_file, 'w') as f:
         json.dump(prepared_data, f, indent=2)
+
+    # Write output file to JSONL format
+    with open(output_file.replace('.json', '.jsonl'), 'w') as f_jsonl:
+        for item in prepared_data:
+            f_jsonl.write(json.dumps(item) + '\n')
     
     logger.info(f"Prepared dataset saved to: {output_file}")

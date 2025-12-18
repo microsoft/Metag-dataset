@@ -11,3 +11,4 @@ torch
 torchvision
 transformers
 accelerate
+rank-bm25
