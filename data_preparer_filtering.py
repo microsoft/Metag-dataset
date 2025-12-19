@@ -28,7 +28,7 @@ def get_review_action_items_prompt() -> str:
     """Load and cache the review action items prompt from file."""
     global _REVIEW_ACTION_ITEMS_PROMPT
     if _REVIEW_ACTION_ITEMS_PROMPT is None:
-        prompt_path = os.path.join(os.path.dirname(__file__), 'prompts', '1_extract_review_action_items.txt')
+        prompt_path = os.path.join(os.path.dirname(__file__), 'prompts', '1a_extract_review_action_items.txt')
         with open(prompt_path, 'r') as f:
             _REVIEW_ACTION_ITEMS_PROMPT = f.read()
     return _REVIEW_ACTION_ITEMS_PROMPT
@@ -214,6 +214,7 @@ if __name__ == "__main__":
     else:
         raise NotImplementedError(f"Unknown experiment type: {args.expt}")
 
+    import bpdb; bpdb.set_trace()
     config = InferenceConfig.from_yaml("config.yaml")
     prompts = [item['prompt'] for item in prepared_data]
     
