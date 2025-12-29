@@ -16,9 +16,9 @@ import hashlib
 
 class CommentFilteringApp:
     # Font settings - adjust these to change UI font sizes
-    FONT_SIZE_NORMAL = 12
-    FONT_SIZE_LARGE = 14
-    FONT_SIZE_HEADER = 16
+    FONT_SIZE_NORMAL = 14
+    FONT_SIZE_LARGE = 16
+    FONT_SIZE_HEADER = 18
     
     def __init__(self, root):
         self.root = root
