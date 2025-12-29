@@ -214,7 +214,6 @@ if __name__ == "__main__":
     else:
         raise NotImplementedError(f"Unknown experiment type: {args.expt}")
 
-    import bpdb; bpdb.set_trace()
     config = InferenceConfig.from_yaml("config.yaml")
     prompts = [item['prompt'] for item in prepared_data]
     

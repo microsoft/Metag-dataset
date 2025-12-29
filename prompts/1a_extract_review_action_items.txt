@@ -17,17 +17,15 @@ For all examples of this, make sure to **paraphrase** the reviewer comment and t
 {
     "entities": [
         {
-        "comment": <Reviewer's comment asking something to be fixed>,
-        "response": <Response from the authors stating how the issue will be fixed>,
+        "comment": <Comment from Review asking something to be fixed>,
+        "response": <Response from Dialogue stating how the issue will be fixed>,
         },
         {
-        "comment": <Another comment from a reviewer asking something to be fixed>,
-        "response": <Another response from the authors stating how the issue will be fixed>,
+        "comment": <Another comment from Reviewe asking something to be fixed>,
+        "response": <Another response from the Dialogue stating how the issue will be fixed>,
         },
-
     ]
 }
-
 
 ## Example Input: 
 ## Review:
