@@ -1737,14 +1737,24 @@ class PDFViewerPane:
 		self.hide_loading_message() 
 		print(f"Pane {self.pane_id}: PDF closed and resources cleared.")
 class PDFViewerApp:
-	def __init__(self, master):
+	def __init__(self, master, reviewer_comment="", author_response=""):
 		self.master = master
-		self.master.geometry("1200x800") 
+		self.is_fullscreen = False
+		# Get screen dimensions and set to 90% of screen size, centered
+		screen_width = self.master.winfo_screenwidth()
+		screen_height = self.master.winfo_screenheight()
+		window_width = int(screen_width * 0.9)
+		window_height = int(screen_height * 0.9)
+		pos_x = (screen_width - window_width) // 2
+		pos_y = (screen_height - window_height) // 2
+		self.master.geometry(f"{window_width}x{window_height}+{pos_x}+{pos_y}")
 		self.pdf_documents = [None, None] 
 		self.words_data_list = [None, None] 
 		self.current_active_pane = None 
 		self.pane1 = None 
-		self.pane2 = None 
+		self.pane2 = None
+		self.reviewer_comment = reviewer_comment
+		self.author_response = author_response 
 		self.zoom_scale_1 = None
 		self.zoom_scale_2 = None
 		self.zoom_percent_label_1 = None
@@ -1809,20 +1819,125 @@ class PDFViewerApp:
 												  variable=self.ignore_ligatures, onvalue=True, offvalue=False)
 		self.ignore_ligatures_checkbox.pack(side=tk.LEFT, padx=5)
 		self.tip_ignore_ligatures = Hovertip(self.ignore_ligatures_checkbox,'Works only BEFORE loading files.\nLoad again one file if you need to change this setting.')
-		self.panes_container = ttk.Frame(self.master)
-		self.panes_container.pack(fill=tk.BOTH, expand=True)
+		# Create status bar at the bottom
+		self.status_frame = ttk.Frame(self.master)
+		self.status_frame.pack(fill=tk.X, side=tk.BOTTOM)
+		self.status_label = ttk.Label(self.status_frame, text="Ready", anchor=tk.W)
+		self.status_label.pack(side=tk.LEFT, padx=10, pady=2)
+		self.loading_indicator = ttk.Progressbar(self.status_frame, mode='indeterminate', length=150)
+		self.loading_indicator.pack(side=tk.RIGHT, padx=10, pady=2)
+		self.loading_indicator.pack_forget()  # Hide initially
+		
+		# Main container using tk.PanedWindow for adjustable panes
+		self.main_paned = tk.PanedWindow(self.master, orient=tk.HORIZONTAL, sashwidth=6, sashrelief=tk.RAISED)
+		self.main_paned.pack(fill=tk.BOTH, expand=True)
+		
+		# Left container for PDF panes
+		self.panes_container = ttk.Frame(self.main_paned)
+		self.main_paned.add(self.panes_container, stretch='always')
+		
 		self.pane1 = PDFViewerPane(self.panes_container, self, 'left')
 		self.pane1.canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 		self.pane1.canvas.bind("<FocusIn>", lambda e: self.set_active_pane(self.pane1))
 		self.pane2 = PDFViewerPane(self.panes_container, self, 'right')
-		self.pane2.canvas_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+		self.pane2.canvas_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 		self.pane2.canvas.bind("<FocusIn>", lambda e: self.set_active_pane(self.pane2))
+		
+		# Create the comment pane on the right
+		self._setup_comment_pane()
+		
+		# Set initial sash position after window is fully rendered
+		self.master.bind('<Map>', self._on_window_map)
+		
 		self.zoom_scale_1.config(command=self.pane1.set_zoom_from_scale_widget)
 		self.zoom_scale_2.config(command=self.pane2.set_zoom_from_scale_widget)
 		self.master.bind('p', lambda event: self.go_to_prev_change())
 		self.master.bind('P', lambda event: self.go_to_prev_change())
 		self.master.bind('n', lambda event: self.go_to_next_change())
 		self.master.bind('N', lambda event: self.go_to_next_change())
+		self.master.bind('<F11>', lambda event: self.toggle_fullscreen())
+		self.master.bind('<Escape>', lambda event: self.exit_fullscreen())
+
+	def toggle_fullscreen(self):
+		"""Toggle fullscreen mode."""
+		self.is_fullscreen = not self.is_fullscreen
+		self.master.attributes('-fullscreen', self.is_fullscreen)
+	
+	def _on_window_map(self, event=None):
+		"""Called when window is mapped/shown. Sets initial sash position."""
+		# Only do this once
+		self.master.unbind('<Map>')
+		# Set sash position so comment pane is 25% of width
+		self.master.after(50, self._set_sash_position)
+	
+	def _set_sash_position(self):
+		"""Set the sash position to give comment pane 25% width."""
+		try:
+			total_width = self.main_paned.winfo_width()
+			if total_width > 100:
+				# Position sash at 75% so comment pane gets 25%
+				self.main_paned.sash_place(0, int(total_width * 0.75), 0)
+		except Exception as e:
+			print(f"Could not set sash position: {e}")
+
+	def exit_fullscreen(self):
+		"""Exit fullscreen mode."""
+		self.is_fullscreen = False
+		self.master.attributes('-fullscreen', False)
+
+	def show_loading(self, message="Loading..."):
+		"""Show the loading indicator in the status bar."""
+		self.status_label.config(text=message)
+		self.loading_indicator.pack(side=tk.RIGHT, padx=10, pady=2)
+		self.loading_indicator.start(10)
+		self.master.update_idletasks()
+
+	def hide_loading(self):
+		"""Hide the loading indicator in the status bar."""
+		self.loading_indicator.stop()
+		self.loading_indicator.pack_forget()
+		self.status_label.config(text="Ready")
+		self.master.update_idletasks()
+
+	def _setup_comment_pane(self):
+		"""Sets up the comment pane on the right side for reviewer comment and author response."""
+		self.comment_frame = ttk.Frame(self.main_paned)
+		self.main_paned.add(self.comment_frame, stretch='always')
+		
+		# Reviewer Comment Section
+		reviewer_label = ttk.Label(self.comment_frame, text="Reviewer Comment", font=('TkDefaultFont', 10, 'bold'))
+		reviewer_label.pack(anchor=tk.W, padx=5, pady=(5, 2))
+		
+		# Create frame for text widget and scrollbar
+		reviewer_frame = ttk.Frame(self.comment_frame)
+		reviewer_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 10))
+		
+		self.reviewer_text = tk.Text(reviewer_frame, wrap=tk.WORD, state=tk.NORMAL, font=('TkDefaultFont', 18))
+		reviewer_scrollbar = ttk.Scrollbar(reviewer_frame, orient=tk.VERTICAL, command=self.reviewer_text.yview)
+		self.reviewer_text.configure(yscrollcommand=reviewer_scrollbar.set)
+		
+		reviewer_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+		self.reviewer_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		self.reviewer_text.insert(tk.END, self.reviewer_comment)
+		self.reviewer_text.config(state=tk.DISABLED)  # Make read-only
+		
+		# Author Response Section
+		author_label = ttk.Label(self.comment_frame, text="Author Response", font=('TkDefaultFont', 10, 'bold'))
+		author_label.pack(anchor=tk.W, padx=5, pady=(5, 2))
+		
+		# Create frame for text widget and scrollbar
+		author_frame = ttk.Frame(self.comment_frame)
+		author_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
+		
+		self.author_text = tk.Text(author_frame, wrap=tk.WORD, state=tk.NORMAL, font=('TkDefaultFont', 18))
+		author_scrollbar = ttk.Scrollbar(author_frame, orient=tk.VERTICAL, command=self.author_text.yview)
+		self.author_text.configure(yscrollcommand=author_scrollbar.set)
+		
+		author_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+		self.author_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		self.author_text.insert(tk.END, self.author_response)
+		self.author_text.config(state=tk.DISABLED)  # Make read-only
+
 	def _process_command_line_args(self):
 		"""Processes command-line arguments to load initial PDF files."""
 		if len(sys.argv) > 1:
@@ -1892,6 +2007,7 @@ class PDFViewerApp:
 		"""
 		pane = self.pane1 if pane_index == 0 else self.pane2
 		pane.display_loading_message(f"Loading '{display_file_name}'...")
+		self.show_loading(f"Loading '{display_file_name}'...")
 		self.pdf_documents[pane_index] = None
 		self.words_data_list[pane_index] = None
 		pane.words_data = [] 
@@ -1917,7 +2033,8 @@ class PDFViewerApp:
 		after a PDF has been loaded and processed in a background thread.
 		"""
 		pane = self.pane1 if pane_index == 0 else self.pane2
-		pane.hide_loading_message() 
+		pane.hide_loading_message()
+		self.hide_loading()
 		if error_message:
 			messagebox.showerror("Error", f"Failed to open/process file in {pane.pane_id} pane: {error_message}")
 			self.pdf_documents[pane_index] = None
@@ -2213,8 +2330,18 @@ class PDFViewerApp:
 
 
 if __name__ == "__main__":
+	import argparse
+	parser = argparse.ArgumentParser(description='PDF Diff Viewer with Reviewer Comments')
+	parser.add_argument('files', nargs='*', help='PDF files to open (up to 2)')
+	parser.add_argument('--reviewer-comment', '-r', type=str, default='', help='Reviewer comment text')
+	parser.add_argument('--author-response', '-a', type=str, default='', help='Author response text')
+	args = parser.parse_args()
+	
+	# Reconstruct sys.argv for backward compatibility with _process_command_line_args
+	sys.argv = [sys.argv[0]] + args.files
+	
 	root = TkinterDnD.Tk()
-	app = PDFViewerApp(root)
+	app = PDFViewerApp(root, reviewer_comment=args.reviewer_comment, author_response=args.author_response)
 	root.protocol("WM_DELETE_WINDOW", app.on_closing)
 
 	root.mainloop()
