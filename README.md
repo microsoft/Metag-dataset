@@ -25,7 +25,8 @@ export SEMANTICSCHOLAR_API_KEY=<ss-api-key>
 ```
 python scraper.py
 python dialogue_diff.py
-python data_preparer_filtering.py
+python data_preparer_filtering.py --expt review_action_items
+python comment_filtering_ui.py
 ```
 
 
