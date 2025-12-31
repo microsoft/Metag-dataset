@@ -1,5 +1,7 @@
 ### Install packages
 sudo apt install python3-tk
+sudo apt-get install idle3
+
 
 
 ### Set up virtual environment  
@@ -26,8 +28,16 @@ export SEMANTICSCHOLAR_API_KEY=<ss-api-key>
 python scraper.py
 python dialogue_diff.py
 python data_preparer_filtering.py --expt review_action_items
-python comment_filtering_ui.py
 ```
+
+### UI elements for human annotation
+```
+python comment_filtering_ui.py
+python PDF-Diff-Functions/pdf_viewer_clickable.py <path/to/pdf1> <path/to/pdf2> -r "reviewer comment" -a "author response"
+```
+
+Comment filtering allows to keep/discard a comment-response pair
+The clickable PDF viewer allows to view a comment-response pair and click on the corresponding diffs to save them
 
 
 ### Install PyTorch
