@@ -27,13 +27,13 @@ export SEMANTICSCHOLAR_API_KEY=<ss-api-key>
 ```
 python scraper.py
 python dialogue_diff.py
-python data_preparer_filtering.py --expt review_action_items
+python data_preparer_filtering.py --input-file ./ICLR.cc/2024/Conference/dialogues/papers_20251208_225455_with_arxiv_with_pdfs_dialogues.json --output-file extracted_dialogue_pairs.json --expt review_action_items
 ```
 
 ### UI elements for human annotation
 ```
 python comment_filtering_ui.py
-python PDF-Diff-Functions/pdf_viewer_clickable.py <path/to/pdf1> <path/to/pdf2> -r "reviewer comment" -a "author response"
+python diff_linking_ui.py ./extracted_dialogue_pairs_filtered.jsonl ./ICLR.cc/2024/Conference/PDF2/ -o tmp_outputs_diff_linked.jsonl
 ```
 
 Comment filtering allows to keep/discard a comment-response pair
