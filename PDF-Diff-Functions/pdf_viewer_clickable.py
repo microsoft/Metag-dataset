@@ -88,6 +88,67 @@ os.makedirs(TEMP_PDF_DIR, exist_ok=True)
 
 # Default JSONL file for saving clicked diffs
 DIFF_OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "saved_diffs.jsonl")
+
+# Diff cache file for reusing computed diffs across entries with same PDFs
+DIFF_CACHE_FILE = os.path.join(os.path.dirname(__file__), "diff_cache.json")
+
+# Entry queue file for multiple entries from the same paper
+ENTRY_QUEUE_FILE = os.path.join(os.path.dirname(__file__), "entry_queue.json")
+
+# Results file where saved entries are written
+ENTRY_RESULTS_FILE = os.path.join(os.path.dirname(__file__), "entry_results.jsonl")
+
+def save_diff_cache(pdf1_path: str, pdf2_path: str, words_data1: list, words_data2: list):
+	"""
+	Save computed diff data to cache file for reuse with same PDFs.
+	"""
+	cache_data = {
+		"pdf1_path": pdf1_path,
+		"pdf2_path": pdf2_path,
+		"words_data1": words_data1,
+		"words_data2": words_data2,
+	}
+	try:
+		with open(DIFF_CACHE_FILE, 'w', encoding='utf-8') as f:
+			json.dump(cache_data, f, ensure_ascii=False)
+		print(f"Diff cache saved to {DIFF_CACHE_FILE}")
+	except Exception as e:
+		print(f"Warning: Could not save diff cache: {e}")
+
+def load_diff_cache(pdf1_path: str, pdf2_path: str) -> tuple[list, list] | None:
+	"""
+	Load cached diff data if it matches the given PDF paths.
+	
+	Returns:
+		Tuple of (words_data1, words_data2) if cache is valid, None otherwise.
+	"""
+	if not os.path.exists(DIFF_CACHE_FILE):
+		return None
+	
+	try:
+		with open(DIFF_CACHE_FILE, 'r', encoding='utf-8') as f:
+			cache_data = json.load(f)
+		
+		# Check if cache matches current PDFs
+		if cache_data.get("pdf1_path") == pdf1_path and cache_data.get("pdf2_path") == pdf2_path:
+			print(f"Loading cached diffs from {DIFF_CACHE_FILE}")
+			return cache_data.get("words_data1"), cache_data.get("words_data2")
+		else:
+			print("Diff cache exists but doesn't match current PDFs, will recompute.")
+			return None
+	except Exception as e:
+		print(f"Warning: Could not load diff cache: {e}")
+		return None
+
+def clear_diff_cache():
+	"""Remove the diff cache file."""
+	if os.path.exists(DIFF_CACHE_FILE):
+		try:
+			os.remove(DIFF_CACHE_FILE)
+			print(f"Diff cache cleared.")
+		except Exception as e:
+			print(f"Warning: Could not clear diff cache: {e}")
+
 try:
 	if windll and not is_wsl:
 		windll.user32.SetThreadDpiAwarenessContext(wintypes.HANDLE(-2))
@@ -1003,10 +1064,17 @@ class PDFViewerPane:
 		self.context_menu = tk.Menu(self.master, tearoff=0)
 		self.canvas.bind("<Double-Button-1>", self._toggle_pan_mode)
 		self.canvas.bind("<Motion>", self._on_pan_move)
-		self.canvas.bind("<Shift-Button-1>", self._on_diff_click)
+		self.canvas.bind("<Shift-Button-1>", self._on_shift_click_start)
+		self.canvas.bind("<Shift-B1-Motion>", self._on_shift_drag)
+		self.canvas.bind("<Shift-ButtonRelease-1>", self._on_shift_release)
 		self._pan_mode_active = False
 		self._cursor_start_pos = None
 		self._after_id = None
+		# Box selection state
+		self._selection_start_x = None
+		self._selection_start_y = None
+		self._selection_rect_id = None
+		self._is_box_selecting = False
 	def _toggle_pan_mode(self, event):
 		"""Toggles the panning mode on or off."""
 		if self._pan_mode_active:
@@ -1087,24 +1155,213 @@ class PDFViewerPane:
 		finally:
 			self.context_menu.grab_release()
 
-	def _on_diff_click(self, event):
-		"""Handles Shift+Click to save a highlighted diff to JSONL file."""
+	def _on_shift_click_start(self, event):
+		"""Handles Shift+Click start - begins box selection."""
 		if not self.pdf_document or self.pdf_document.is_closed:
 			return
 		
-		# Get the click position in content coordinates
-		click_x_content = self.canvas.canvasx(event.x)
-		click_y_content = self.canvas.canvasy(event.y)
+		# Store the starting position for box selection
+		self._selection_start_x = self.canvas.canvasx(event.x)
+		self._selection_start_y = self.canvas.canvasy(event.y)
+		self._is_box_selecting = False  # Will become True if user drags
 		
-		# Find the highlighted word at this position
-		clicked_word = self._find_word_at_position(click_x_content, click_y_content)
+		# Create initial selection rectangle (invisible until dragging)
+		self._selection_rect_id = self.canvas.create_rectangle(
+			self._selection_start_x, self._selection_start_y,
+			self._selection_start_x, self._selection_start_y,
+			outline="blue", width=2, dash=(4, 4)
+		)
+
+	def _on_shift_drag(self, event):
+		"""Handles Shift+Drag - updates selection box."""
+		if self._selection_start_x is None or self._selection_rect_id is None:
+			return
+		
+		self._is_box_selecting = True
+		current_x = self.canvas.canvasx(event.x)
+		current_y = self.canvas.canvasy(event.y)
+		
+		# Update the selection rectangle
+		self.canvas.coords(
+			self._selection_rect_id,
+			self._selection_start_x, self._selection_start_y,
+			current_x, current_y
+		)
+
+	def _on_shift_release(self, event):
+		"""Handles Shift+Release - either single click or box selection complete."""
+		if not self.pdf_document or self.pdf_document.is_closed:
+			self._cleanup_selection()
+			return
+		
+		end_x = self.canvas.canvasx(event.x)
+		end_y = self.canvas.canvasy(event.y)
+		
+		# Check if this was a drag (box selection) or just a click
+		if self._is_box_selecting and self._selection_start_x is not None:
+			# This was a box drag - find all diffs in the box
+			self._handle_box_selection(end_x, end_y)
+		else:
+			# This was just a click - handle single diff click
+			self._handle_single_diff_click(end_x, end_y)
+		
+		self._cleanup_selection()
+
+	def _cleanup_selection(self):
+		"""Cleans up selection state and removes the selection rectangle."""
+		if self._selection_rect_id is not None:
+			self.canvas.delete(self._selection_rect_id)
+			self._selection_rect_id = None
+		self._selection_start_x = None
+		self._selection_start_y = None
+		self._is_box_selecting = False
+
+	def _handle_single_diff_click(self, click_x, click_y):
+		"""Handles a single Shift+Click to save one highlighted diff."""
+		clicked_word = self._find_word_at_position(click_x, click_y)
 		
 		if clicked_word and clicked_word.get("highlight_color"):
-			# Get the context around the clicked word (surrounding diff)
 			diff_context = self._get_diff_context(clicked_word)
 			self._show_save_diff_dialog(clicked_word, diff_context)
 		else:
 			print("No highlighted diff found at click position. Use Shift+Click on a highlighted word.")
+
+	def _handle_box_selection(self, end_x, end_y):
+		"""Finds all diffs within the selection box and saves them."""
+		if self._selection_start_x is None:
+			return
+		
+		# Normalize coordinates (handle any drag direction)
+		x1 = min(self._selection_start_x, end_x)
+		y1 = min(self._selection_start_y, end_y)
+		x2 = max(self._selection_start_x, end_x)
+		y2 = max(self._selection_start_y, end_y)
+		
+		# Find all highlighted words within the box
+		diffs_in_box = self._find_diffs_in_box(x1, y1, x2, y2)
+		
+		if not diffs_in_box:
+			print("No highlighted diffs found in the selected area.")
+			messagebox.showinfo("No Diffs Found", "No highlighted diffs were found in the selected area.")
+			return
+		
+		# Group consecutive highlighted words into diff contexts
+		grouped_diffs = self._group_diffs_by_context(diffs_in_box)
+		
+		# Show confirmation dialog
+		self._show_batch_save_dialog(grouped_diffs)
+
+	def _find_diffs_in_box(self, x1, y1, x2, y2):
+		"""Finds all highlighted words within the given box coordinates (in content space)."""
+		if not self.words_data:
+			return []
+		
+		diffs_found = []
+		
+		for word in self.words_data:
+			if not word.get("highlight_color"):
+				continue
+			
+			page_num = word["page_num"]
+			page_info = self.page_layout_info.get(page_num)
+			if not page_info:
+				continue
+			
+			# Calculate the word's position in content coordinates
+			page_y_start = page_info["y_start_offset"] * self.zoom_level
+			page_width_at_zoom = page_info["base_width"] * self.zoom_level
+			content_width_at_zoom = self.max_document_width * self.zoom_level
+			x_offset = (content_width_at_zoom - page_width_at_zoom) / 2
+			
+			# Word coordinates in content space
+			word_x0 = x_offset + word["x0"] * self.zoom_level
+			word_y0 = page_y_start + word["y0"] * self.zoom_level
+			word_x1 = x_offset + word["x1"] * self.zoom_level
+			word_y1 = page_y_start + word["y1"] * self.zoom_level
+			
+			# Check if word overlaps with selection box
+			if word_x1 >= x1 and word_x0 <= x2 and word_y1 >= y1 and word_y0 <= y2:
+				diffs_found.append(word)
+		
+		return diffs_found
+
+	def _group_diffs_by_context(self, diff_words):
+		"""Groups diff words into contexts (consecutive highlighted sections)."""
+		if not diff_words:
+			return []
+		
+		# Get unique diff contexts for each word
+		seen_contexts = set()
+		grouped_diffs = []
+		
+		for word in diff_words:
+			diff_context = self._get_diff_context(word)
+			
+			# Create a unique key for this diff context
+			context_key = (
+				diff_context.get("page_num", 0),
+				diff_context.get("text", ""),
+				diff_context.get("highlight_color", "")
+			)
+			
+			if context_key not in seen_contexts:
+				seen_contexts.add(context_key)
+				grouped_diffs.append(diff_context)
+		
+		return grouped_diffs
+
+	def _show_batch_save_dialog(self, grouped_diffs):
+		"""Shows a dialog to confirm saving multiple diffs."""
+		num_diffs = len(grouped_diffs)
+		
+		# Build summary message
+		message = f"Found {num_diffs} diff(s) in the selected area.\n\n"
+		
+		# Show preview of first few diffs
+		max_preview = 5
+		for i, diff in enumerate(grouped_diffs[:max_preview]):
+			highlight_color = diff.get("highlight_color", "unknown")
+			diff_type = "deletion" if highlight_color == "red" else "insertion" if highlight_color == "green" else "moved"
+			preview_text = diff.get("text", "")[:50]
+			if len(diff.get("text", "")) > 50:
+				preview_text += "..."
+			message += f"{i+1}. [{diff_type.upper()}] {preview_text}\n"
+		
+		if num_diffs > max_preview:
+			message += f"\n... and {num_diffs - max_preview} more\n"
+		
+		message += f"\nSave all {num_diffs} diff(s) to:\n{DIFF_OUTPUT_FILE}?"
+		
+		if messagebox.askyesno("Save Multiple Diffs", message):
+			self._save_multiple_diffs_to_jsonl(grouped_diffs)
+
+	def _save_multiple_diffs_to_jsonl(self, grouped_diffs):
+		"""Saves multiple diff contexts to the JSONL file."""
+		import datetime
+		
+		saved_count = 0
+		try:
+			with open(DIFF_OUTPUT_FILE, "a", encoding="utf-8") as f:
+				for diff_context in grouped_diffs:
+					diff_entry = {
+						"timestamp": datetime.datetime.now().isoformat(),
+						"pane": self.pane_id,
+						"file_name": self.file_name,
+						"diff_type": "deletion" if diff_context.get("highlight_color") == "red" else "insertion" if diff_context.get("highlight_color") == "green" else "moved",
+						"page_num": diff_context.get("page_num", 0) + 1,
+						"diff_text": diff_context.get("text", ""),
+						"context_before": diff_context.get("context_before", ""),
+						"context_after": diff_context.get("context_after", ""),
+						"word_count": len(diff_context.get("words", []))
+					}
+					f.write(json.dumps(diff_entry, ensure_ascii=False) + "\n")
+					saved_count += 1
+			
+			print(f"{saved_count} diffs saved to {DIFF_OUTPUT_FILE}")
+			messagebox.showinfo("Saved", f"Successfully saved {saved_count} diff(s) to:\n{DIFF_OUTPUT_FILE}")
+		except Exception as e:
+			print(f"Error saving diffs: {e}")
+			messagebox.showerror("Save Error", f"Failed to save diffs: {e}")
 
 	def _find_word_at_position(self, x_content, y_content):
 		"""Finds the word at the given content coordinates."""
@@ -1737,9 +1994,18 @@ class PDFViewerPane:
 		self.hide_loading_message() 
 		print(f"Pane {self.pane_id}: PDF closed and resources cleared.")
 class PDFViewerApp:
-	def __init__(self, master, reviewer_comment="", author_response=""):
+	def __init__(self, master, reviewer_comment="", author_response="", 
+				 use_cached_diffs=False, save_diff_cache=False, entries_queue=None):
 		self.master = master
 		self.is_fullscreen = False
+		self.use_cached_diffs = use_cached_diffs
+		self.save_diff_cache_flag = save_diff_cache
+		
+		# Entry queue for multiple entries from same paper
+		self.entries_queue = entries_queue or []
+		self.current_entry_index = 0
+		self.entry_results = []  # Store results for each entry
+		
 		# Get screen dimensions and set to 90% of screen size, centered
 		screen_width = self.master.winfo_screenwidth()
 		screen_height = self.master.winfo_screenheight()
@@ -1776,6 +2042,15 @@ class PDFViewerApp:
 		self.scroll_height=0
 		self.scroll_target_y=0
 		self.scroll_distance=0
+		
+		# Search state
+		self.search_results = []  # List of (pane, word_index) tuples
+		self.current_search_index = -1
+		self.search_target_pane = None  # 'left', 'right', or 'both'
+		
+		# Load first entry from queue if available
+		if self.entries_queue:
+			self._load_current_entry()
 
 	def setup_ui(self):
 		"""Sets up the main application UI, including control frame and viewer panes."""
@@ -1819,6 +2094,49 @@ class PDFViewerApp:
 												  variable=self.ignore_ligatures, onvalue=True, offvalue=False)
 		self.ignore_ligatures_checkbox.pack(side=tk.LEFT, padx=5)
 		self.tip_ignore_ligatures = Hovertip(self.ignore_ligatures_checkbox,'Works only BEFORE loading files.\nLoad again one file if you need to change this setting.')
+		
+		# Search bar frame
+		search_frame = ttk.Frame(self.master, padding="5")
+		search_frame.pack(fill=tk.X, side=tk.TOP)
+		
+		ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT, padx=(5, 2))
+		self.search_entry = ttk.Entry(search_frame, width=30)
+		self.search_entry.pack(side=tk.LEFT, padx=2)
+		self.search_entry.bind('<Return>', lambda e: self._do_search())
+		self.search_entry.bind('<Escape>', lambda e: self._clear_search())
+		
+		self.search_left_button = ttk.Button(search_frame, text="Search Left", 
+											  command=lambda: self._do_search('left'))
+		self.search_left_button.pack(side=tk.LEFT, padx=2)
+		
+		self.search_right_button = ttk.Button(search_frame, text="Search Right", 
+											   command=lambda: self._do_search('right'))
+		self.search_right_button.pack(side=tk.LEFT, padx=2)
+		
+		self.search_both_button = ttk.Button(search_frame, text="Search Both", 
+											  command=lambda: self._do_search('both'))
+		self.search_both_button.pack(side=tk.LEFT, padx=2)
+		
+		self.search_prev_button = ttk.Button(search_frame, text="◀ Prev", 
+											  command=self._search_prev)
+		self.search_prev_button.pack(side=tk.LEFT, padx=(10, 2))
+		
+		self.search_next_button = ttk.Button(search_frame, text="Next ▶", 
+											  command=self._search_next)
+		self.search_next_button.pack(side=tk.LEFT, padx=2)
+		
+		self.search_clear_button = ttk.Button(search_frame, text="Clear", 
+											   command=self._clear_search)
+		self.search_clear_button.pack(side=tk.LEFT, padx=2)
+		
+		self.search_result_label = ttk.Label(search_frame, text="")
+		self.search_result_label.pack(side=tk.LEFT, padx=10)
+		
+		# Keyboard shortcuts for search
+		self.master.bind('<Control-f>', lambda e: self.search_entry.focus_set())
+		self.master.bind('<F3>', lambda e: self._search_next())
+		self.master.bind('<Shift-F3>', lambda e: self._search_prev())
+		
 		# Create status bar at the bottom
 		self.status_frame = ttk.Frame(self.master)
 		self.status_frame.pack(fill=tk.X, side=tk.BOTTOM)
@@ -1827,6 +2145,27 @@ class PDFViewerApp:
 		self.loading_indicator = ttk.Progressbar(self.status_frame, mode='indeterminate', length=150)
 		self.loading_indicator.pack(side=tk.RIGHT, padx=10, pady=2)
 		self.loading_indicator.pack_forget()  # Hide initially
+		
+		# Entry navigation controls (for batch processing same paper)
+		self.entry_nav_frame = ttk.Frame(self.status_frame)
+		self.entry_nav_frame.pack(side=tk.RIGHT, padx=10)
+		
+		self.save_entry_button = ttk.Button(self.entry_nav_frame, text="Save & Next Entry", 
+											command=self._save_and_next_entry)
+		self.save_entry_button.pack(side=tk.LEFT, padx=5)
+		
+		self.skip_entry_button = ttk.Button(self.entry_nav_frame, text="Skip Entry", 
+											command=self._skip_entry)
+		self.skip_entry_button.pack(side=tk.LEFT, padx=5)
+		
+		self.entry_label = ttk.Label(self.entry_nav_frame, text="")
+		self.entry_label.pack(side=tk.LEFT, padx=10)
+		
+		# Hide entry navigation if no queue
+		if not self.entries_queue:
+			self.entry_nav_frame.pack_forget()
+		else:
+			self._update_entry_label()
 		
 		# Main container using tk.PanedWindow for adjustable panes
 		self.main_paned = tk.PanedWindow(self.master, orient=tk.HORIZONTAL, sashwidth=6, sashrelief=tk.RAISED)
@@ -1937,6 +2276,315 @@ class PDFViewerApp:
 		self.author_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 		self.author_text.insert(tk.END, self.author_response)
 		self.author_text.config(state=tk.DISABLED)  # Make read-only
+
+	def _load_current_entry(self):
+		"""Load the current entry from the queue and update the comment panes."""
+		if not self.entries_queue or self.current_entry_index >= len(self.entries_queue):
+			return
+		
+		entry = self.entries_queue[self.current_entry_index]
+		self.reviewer_comment = entry.get('filtered_comment', '')
+		self.author_response = entry.get('filtered_response', '')
+		
+		# Update the text widgets
+		self._update_comment_display()
+		self._update_entry_label()
+		
+		print(f"Loaded entry {self.current_entry_index + 1}/{len(self.entries_queue)}")
+
+	def _update_comment_display(self):
+		"""Update the reviewer comment and author response text widgets."""
+		# Update reviewer comment
+		self.reviewer_text.config(state=tk.NORMAL)
+		self.reviewer_text.delete('1.0', tk.END)
+		self.reviewer_text.insert(tk.END, self.reviewer_comment)
+		self.reviewer_text.config(state=tk.DISABLED)
+		
+		# Update author response
+		self.author_text.config(state=tk.NORMAL)
+		self.author_text.delete('1.0', tk.END)
+		self.author_text.insert(tk.END, self.author_response)
+		self.author_text.config(state=tk.DISABLED)
+
+	def _update_entry_label(self):
+		"""Update the entry navigation label."""
+		if self.entries_queue:
+			self.entry_label.config(
+				text=f"Entry {self.current_entry_index + 1} of {len(self.entries_queue)}"
+			)
+
+	def _save_and_next_entry(self):
+		"""Save diffs for current entry and move to next entry."""
+		if not self.entries_queue:
+			return
+		
+		# Get current entry data
+		entry = self.entries_queue[self.current_entry_index]
+		
+		# Collect saved diffs from the saved_diffs.jsonl file
+		diffs = []
+		if os.path.exists(DIFF_OUTPUT_FILE):
+			with open(DIFF_OUTPUT_FILE, 'r', encoding='utf-8') as f:
+				for line in f:
+					line = line.strip()
+					if line:
+						try:
+							diffs.append(json.loads(line))
+						except json.JSONDecodeError:
+							continue
+		
+		# Create result entry
+		result_entry = {**entry, 'diffs': diffs}
+		self.entry_results.append(result_entry)
+		
+		# Write to results file immediately
+		with open(ENTRY_RESULTS_FILE, 'a', encoding='utf-8') as f:
+			f.write(json.dumps(result_entry, ensure_ascii=False) + '\n')
+		
+		print(f"Saved entry {self.current_entry_index + 1} with {len(diffs)} diff(s)")
+		
+		# Clear saved diffs for next entry
+		if os.path.exists(DIFF_OUTPUT_FILE):
+			os.remove(DIFF_OUTPUT_FILE)
+		
+		# Move to next entry
+		self._advance_to_next_entry()
+
+	def _skip_entry(self):
+		"""Skip current entry without saving diffs."""
+		if not self.entries_queue:
+			return
+		
+		# Get current entry data
+		entry = self.entries_queue[self.current_entry_index]
+		
+		# Create result entry with empty diffs
+		result_entry = {**entry, 'diffs': [], 'skipped': True}
+		self.entry_results.append(result_entry)
+		
+		# Write to results file immediately
+		with open(ENTRY_RESULTS_FILE, 'a', encoding='utf-8') as f:
+			f.write(json.dumps(result_entry, ensure_ascii=False) + '\n')
+		
+		print(f"Skipped entry {self.current_entry_index + 1}")
+		
+		# Clear saved diffs for next entry
+		if os.path.exists(DIFF_OUTPUT_FILE):
+			os.remove(DIFF_OUTPUT_FILE)
+		
+		# Move to next entry
+		self._advance_to_next_entry()
+
+	def _advance_to_next_entry(self):
+		"""Advance to the next entry or close if done."""
+		self.current_entry_index += 1
+		
+		if self.current_entry_index >= len(self.entries_queue):
+			# All entries processed
+			messagebox.showinfo("Complete", 
+				f"All {len(self.entries_queue)} entries processed!\n"
+				f"Results saved to: {ENTRY_RESULTS_FILE}")
+			self.on_closing()
+		else:
+			# Load next entry
+			self._load_current_entry()
+
+	def _do_search(self, target='both'):
+		"""
+		Search for text in the specified pane(s).
+		
+		Args:
+			target: 'left', 'right', or 'both'
+		"""
+		search_text = self.search_entry.get().strip()
+		if not search_text:
+			self.search_result_label.config(text="Enter search text")
+			return
+		
+		self.search_target_pane = target
+		self.search_results = []
+		self.current_search_index = -1
+		
+		# Clear any previous search highlights
+		self._clear_search_highlights()
+		
+		# Determine which panes to search
+		panes_to_search = []
+		if target in ('left', 'both') and self.pane1.words_data:
+			panes_to_search.append(self.pane1)
+		if target in ('right', 'both') and self.pane2.words_data:
+			panes_to_search.append(self.pane2)
+		
+		if not panes_to_search:
+			self.search_result_label.config(text="No PDF loaded")
+			return
+		
+		# Search for matches (case-insensitive)
+		search_lower = search_text.lower()
+		
+		for pane in panes_to_search:
+			for idx, word in enumerate(pane.words_data):
+				if search_lower in word.get('text', '').lower():
+					self.search_results.append((pane, idx))
+		
+		if not self.search_results:
+			self.search_result_label.config(text="No matches found")
+			return
+		
+		# Highlight all matches
+		self._highlight_search_results()
+		
+		# Go to first result
+		self.current_search_index = 0
+		self._go_to_search_result()
+	
+	def _clear_search(self):
+		"""Clear search results and highlights."""
+		self.search_entry.delete(0, tk.END)
+		self.search_results = []
+		self.current_search_index = -1
+		self.search_result_label.config(text="")
+		self._clear_search_highlights()
+	
+	def _clear_search_highlights(self):
+		"""Remove search highlight tags from canvases."""
+		# We'll use canvas rectangle items with a special tag
+		if self.pane1:
+			self.pane1.canvas.delete("search_highlight")
+		if self.pane2:
+			self.pane2.canvas.delete("search_highlight")
+	
+	def _highlight_search_results(self):
+		"""Highlight all search results on the canvas."""
+		for pane, word_idx in self.search_results:
+			word = pane.words_data[word_idx]
+			self._draw_search_highlight(pane, word, is_current=False)
+	
+	def _draw_search_highlight(self, pane, word, is_current=False):
+		"""Draw a highlight rectangle for a search result."""
+		if not pane.pdf_document or pane.pdf_document.is_closed:
+			return
+		
+		page_num = word.get('page_num', 0)
+		if page_num not in pane.page_layout_info:
+			return
+		
+		page_info = pane.page_layout_info[page_num]
+		
+		# Calculate position in canvas coordinates (content coordinates * zoom)
+		# Need to account for page centering on the canvas
+		content_width_at_zoom = pane.max_document_width * pane.zoom_level
+		page = pane.pdf_document.load_page(page_num)
+		page_width_at_zoom = page.rect.width * pane.zoom_level
+		page_x_offset = (content_width_at_zoom - page_width_at_zoom) / 2
+		
+		x0 = page_x_offset + word['x0'] * pane.zoom_level
+		y0 = (page_info['y_start_offset'] + word['y0']) * pane.zoom_level
+		x1 = page_x_offset + word['x1'] * pane.zoom_level
+		y1 = (page_info['y_start_offset'] + word['y1']) * pane.zoom_level
+		
+		# Choose color based on whether this is the current result
+		fill_color = "#FFFF00" if is_current else "#FFFFAA"  # Bright yellow for current, pale yellow for others
+		outline_color = "#FF8800" if is_current else "#CCCC00"
+		
+		pane.canvas.create_rectangle(
+			x0, y0, x1, y1,
+			fill=fill_color, outline=outline_color, width=2,
+			stipple='gray50' if not is_current else '',
+			tags="search_highlight"
+		)
+		
+		# Raise search highlights above page images
+		pane.canvas.tag_raise("search_highlight")
+	
+	def _redraw_search_highlights(self):
+		"""Redraw all search highlights (called after rendering updates)."""
+		if not self.search_results:
+			return
+		
+		self._clear_search_highlights()
+		self._highlight_search_results()
+		
+		# Draw current result with special highlight
+		if 0 <= self.current_search_index < len(self.search_results):
+			pane, word_idx = self.search_results[self.current_search_index]
+			word = pane.words_data[word_idx]
+			self._draw_search_highlight(pane, word, is_current=True)
+	
+	def _go_to_search_result(self):
+		"""Navigate to the current search result."""
+		if not self.search_results or self.current_search_index < 0:
+			return
+		
+		# Clear and redraw highlights
+		self._clear_search_highlights()
+		self._highlight_search_results()
+		
+		# Get current result
+		pane, word_idx = self.search_results[self.current_search_index]
+		word = pane.words_data[word_idx]
+		
+		# Draw current result with different highlight
+		self._draw_search_highlight(pane, word, is_current=True)
+		
+		# Scroll to the word
+		self._scroll_to_word(pane, word)
+		
+		# Update label
+		self.search_result_label.config(
+			text=f"Match {self.current_search_index + 1} of {len(self.search_results)}"
+		)
+	
+	def _scroll_to_word(self, pane, word):
+		"""Scroll the pane to make the word visible."""
+		if not pane.pdf_document or pane.pdf_document.is_closed:
+			return
+		
+		page_num = word.get('page_num', 0)
+		if page_num not in pane.page_layout_info:
+			return
+		
+		page_info = pane.page_layout_info[page_num]
+		
+		# Calculate y position in content coordinates (unscaled)
+		word_y = page_info['y_start_offset'] + word['y0']
+		
+		# Calculate scroll position to center the word
+		canvas_height = pane.canvas.winfo_height()
+		total_height = pane.total_document_height * pane.zoom_level
+		
+		if total_height <= canvas_height:
+			return  # No scrolling needed
+		
+		# Target position: word should be roughly 1/3 from top
+		target_y = (word_y * pane.zoom_level) - (canvas_height / 3)
+		target_y = max(0, min(target_y, total_height - canvas_height))
+		
+		# Scroll to position
+		scroll_fraction = target_y / total_height
+		pane.canvas.yview_moveto(scroll_fraction)
+		pane.schedule_render_visible_pages()
+		
+		# Redraw highlights after scrolling (with a small delay to let render complete)
+		self.master.after(100, self._redraw_search_highlights)
+	
+	def _search_next(self):
+		"""Go to next search result."""
+		if not self.search_results:
+			# If no results yet, do a search
+			self._do_search()
+			return
+		
+		self.current_search_index = (self.current_search_index + 1) % len(self.search_results)
+		self._go_to_search_result()
+	
+	def _search_prev(self):
+		"""Go to previous search result."""
+		if not self.search_results:
+			return
+		
+		self.current_search_index = (self.current_search_index - 1) % len(self.search_results)
+		self._go_to_search_result()
 
 	def _process_command_line_args(self):
 		"""Processes command-line arguments to load initial PDF files."""
@@ -2063,18 +2711,43 @@ class PDFViewerApp:
 		"""
 		Performs a word-by-word comparison if both PDF documents are loaded.
 		This must run on the main thread.
+		
+		If use_cached_diffs is True, will try to load cached diffs first.
+		If save_diff_cache_flag is True, will save computed diffs to cache.
 		"""
 		doc1_ready = self.pdf_documents[0] and not self.pdf_documents[0].is_closed if self.pdf_documents[0] else False
 		doc2_ready = self.pdf_documents[1] and not self.pdf_documents[1].is_closed if self.pdf_documents[1] else False
 		if doc1_ready and doc2_ready:
 			print("Both documents ready. Performing comparison...")
-			words1_copy = [dict(w) for w in self.words_data_list[0]] if self.words_data_list[0] else []
-			words2_copy = [dict(w) for w in self.words_data_list[1]] if self.words_data_list[1] else []
-			self.words_data_list[0], self.words_data_list[1] = align_words(
-				words1_copy, words2_copy,
-				self.case_insensitive.get(),
-				self.ignore_quotes.get(),
-			)
+			
+			# Get PDF file paths for cache key
+			pdf1_path = self.pane1.file_name or ""
+			pdf2_path = self.pane2.file_name or ""
+			
+			# Try to load from cache if enabled
+			cached_diffs = None
+			if self.use_cached_diffs:
+				cached_diffs = load_diff_cache(pdf1_path, pdf2_path)
+			
+			if cached_diffs:
+				# Use cached diffs
+				print("Using cached diff data (skipping recomputation)")
+				self.words_data_list[0], self.words_data_list[1] = cached_diffs
+			else:
+				# Compute diffs normally
+				words1_copy = [dict(w) for w in self.words_data_list[0]] if self.words_data_list[0] else []
+				words2_copy = [dict(w) for w in self.words_data_list[1]] if self.words_data_list[1] else []
+				self.words_data_list[0], self.words_data_list[1] = align_words(
+					words1_copy, words2_copy,
+					self.case_insensitive.get(),
+					self.ignore_quotes.get(),
+				)
+				
+				# Save to cache if enabled
+				if self.save_diff_cache_flag:
+					save_diff_cache(pdf1_path, pdf2_path, 
+									self.words_data_list[0], self.words_data_list[1])
+			
 			self.pane1.words_data = self.words_data_list[0]
 			self.pane2.words_data = self.words_data_list[1]
 			apply_annotations_to_pdf_pages(self.pdf_documents[0], self.pane1.words_data)
@@ -2335,13 +3008,32 @@ if __name__ == "__main__":
 	parser.add_argument('files', nargs='*', help='PDF files to open (up to 2)')
 	parser.add_argument('--reviewer-comment', '-r', type=str, default='', help='Reviewer comment text')
 	parser.add_argument('--author-response', '-a', type=str, default='', help='Author response text')
+	parser.add_argument('--use-cached-diffs', action='store_true', 
+						help='Use cached diffs if available (for same PDFs)')
+	parser.add_argument('--save-diff-cache', action='store_true',
+						help='Save computed diffs to cache for reuse')
+	parser.add_argument('--entries-file', type=str, default=None,
+						help='JSON file with list of entries to process (enables Next Entry button)')
 	args = parser.parse_args()
+	
+	# Load entries from file if provided
+	entries_queue = None
+	if args.entries_file and os.path.exists(args.entries_file):
+		try:
+			with open(args.entries_file, 'r', encoding='utf-8') as f:
+				entries_queue = json.load(f)
+			print(f"Loaded {len(entries_queue)} entries from {args.entries_file}")
+		except Exception as e:
+			print(f"Warning: Could not load entries file: {e}")
+			entries_queue = None
 	
 	# Reconstruct sys.argv for backward compatibility with _process_command_line_args
 	sys.argv = [sys.argv[0]] + args.files
 	
 	root = TkinterDnD.Tk()
-	app = PDFViewerApp(root, reviewer_comment=args.reviewer_comment, author_response=args.author_response)
+	app = PDFViewerApp(root, reviewer_comment=args.reviewer_comment, author_response=args.author_response,
+					   use_cached_diffs=args.use_cached_diffs, save_diff_cache=args.save_diff_cache,
+					   entries_queue=entries_queue)
 	root.protocol("WM_DELETE_WINDOW", app.on_closing)
 
 	root.mainloop()
