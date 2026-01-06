@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import webbrowser
 import traceback
 from collections import defaultdict
 from idlelib.tooltip import Hovertip
@@ -2005,6 +2006,7 @@ class PDFViewerApp:
 		self.entries_queue = entries_queue or []
 		self.current_entry_index = 0
 		self.entry_results = []  # Store results for each entry
+		self.current_paper_id = None  # Store the current paper ID for OpenReview link
 		
 		# Get screen dimensions and set to 90% of screen size, centered
 		screen_width = self.master.winfo_screenwidth()
@@ -2243,6 +2245,12 @@ class PDFViewerApp:
 		self.comment_frame = ttk.Frame(self.main_paned)
 		self.main_paned.add(self.comment_frame, stretch='always')
 		
+		# OpenReview link (right-justified at top)
+		self.openreview_link = tk.Label(self.comment_frame, text="", fg="blue", cursor="hand2", 
+										 font=('TkDefaultFont', 10, 'underline'))
+		self.openreview_link.pack(anchor=tk.E, padx=5, pady=(5, 2))
+		self.openreview_link.bind("<Button-1>", lambda e: self._open_openreview_link())
+		
 		# Reviewer Comment Section
 		reviewer_label = ttk.Label(self.comment_frame, text="Reviewer Comment", font=('TkDefaultFont', 10, 'bold'))
 		reviewer_label.pack(anchor=tk.W, padx=5, pady=(5, 2))
@@ -2285,10 +2293,12 @@ class PDFViewerApp:
 		entry = self.entries_queue[self.current_entry_index]
 		self.reviewer_comment = entry.get('filtered_comment', '')
 		self.author_response = entry.get('filtered_response', '')
+		self.current_paper_id = entry.get('paper_id', None)
 		
 		# Update the text widgets
 		self._update_comment_display()
 		self._update_entry_label()
+		self._update_openreview_link()
 		
 		print(f"Loaded entry {self.current_entry_index + 1}/{len(self.entries_queue)}")
 
@@ -2312,6 +2322,27 @@ class PDFViewerApp:
 			self.entry_label.config(
 				text=f"Entry {self.current_entry_index + 1} of {len(self.entries_queue)}"
 			)
+
+	def _update_openreview_link(self):
+		"""Update the OpenReview link display based on current paper ID."""
+		if self.current_paper_id:
+			self.openreview_link.config(text=f"OpenReview: {self.current_paper_id}")
+		else:
+			self.openreview_link.config(text="")
+
+	def _open_openreview_link(self):
+		"""Copy the OpenReview URL to clipboard (browser opening not possible over SSH)."""
+		if self.current_paper_id:
+			url = f"https://openreview.net/forum?id={self.current_paper_id}"
+			# Copy URL to clipboard
+			try:
+				self.master.clipboard_clear()
+				self.master.clipboard_append(url)
+				self.status_label.config(text=f"URL copied: {url}")
+				print(f"OpenReview URL: {url}")
+			except Exception as e:
+				print(f"Could not copy to clipboard: {e}")
+				print(f"OpenReview URL: {url}")
 
 	def _save_and_next_entry(self):
 		"""Save diffs for current entry and move to next entry."""
@@ -2392,6 +2423,7 @@ class PDFViewerApp:
 	def _do_search(self, target='both'):
 		"""
 		Search for text in the specified pane(s).
+		Supports single words and multi-word phrases.
 		
 		Args:
 			target: 'left', 'right', or 'both'
@@ -2421,11 +2453,59 @@ class PDFViewerApp:
 		
 		# Search for matches (case-insensitive)
 		search_lower = search_text.lower()
+		search_words = search_lower.split()
 		
 		for pane in panes_to_search:
-			for idx, word in enumerate(pane.words_data):
-				if search_lower in word.get('text', '').lower():
-					self.search_results.append((pane, idx))
+			if len(search_words) == 1:
+				# Single word search - match within word text
+				for idx, word in enumerate(pane.words_data):
+					if search_lower in word.get('text', '').lower():
+						self.search_results.append((pane, [idx]))
+			else:
+				# Multi-word phrase search - find consecutive words
+				num_words = len(pane.words_data)
+				num_search_words = len(search_words)
+				
+				for idx in range(num_words - num_search_words + 1):
+					# Check if consecutive words on same page match the phrase
+					match = True
+					matched_indices = []
+					current_page = pane.words_data[idx].get('page_num', -1)
+					
+					for j, search_word in enumerate(search_words):
+						word = pane.words_data[idx + j]
+						word_text = word.get('text', '').lower()
+						word_page = word.get('page_num', -1)
+						
+						# Must be on same page and match the search word
+						if word_page != current_page:
+							match = False
+							break
+						
+						# First word can be partial match at end, last word at start
+						# Middle words should be exact match
+						if j == 0:
+							# First word - should end with or equal search word
+							if not (word_text == search_word or word_text.endswith(search_word) or search_word in word_text):
+								# Try if word starts with search word (for partial)
+								if not word_text.startswith(search_word) and search_word not in word_text:
+									match = False
+									break
+						elif j == num_search_words - 1:
+							# Last word - should start with or equal search word
+							if not (word_text == search_word or word_text.startswith(search_word) or search_word in word_text):
+								match = False
+								break
+						else:
+							# Middle word - exact match or contains
+							if word_text != search_word and search_word not in word_text:
+								match = False
+								break
+						
+						matched_indices.append(idx + j)
+					
+					if match:
+						self.search_results.append((pane, matched_indices))
 		
 		if not self.search_results:
 			self.search_result_label.config(text="No matches found")
@@ -2456,9 +2536,10 @@ class PDFViewerApp:
 	
 	def _highlight_search_results(self):
 		"""Highlight all search results on the canvas."""
-		for pane, word_idx in self.search_results:
-			word = pane.words_data[word_idx]
-			self._draw_search_highlight(pane, word, is_current=False)
+		for pane, word_indices in self.search_results:
+			for word_idx in word_indices:
+				word = pane.words_data[word_idx]
+				self._draw_search_highlight(pane, word, is_current=False)
 	
 	def _draw_search_highlight(self, pane, word, is_current=False):
 		"""Draw a highlight rectangle for a search result."""
@@ -2485,12 +2566,12 @@ class PDFViewerApp:
 		
 		# Choose color based on whether this is the current result
 		fill_color = "#FFFF00" if is_current else "#FFFFAA"  # Bright yellow for current, pale yellow for others
-		outline_color = "#FF8800" if is_current else "#CCCC00"
+		outline_color = "#FF0000" if is_current else "#CCCC00"
 		
 		pane.canvas.create_rectangle(
 			x0, y0, x1, y1,
 			fill=fill_color, outline=outline_color, width=2,
-			stipple='gray50' if not is_current else '',
+			stipple='gray25',  # Use stipple pattern for transparency so text is readable
 			tags="search_highlight"
 		)
 		
@@ -2507,9 +2588,10 @@ class PDFViewerApp:
 		
 		# Draw current result with special highlight
 		if 0 <= self.current_search_index < len(self.search_results):
-			pane, word_idx = self.search_results[self.current_search_index]
-			word = pane.words_data[word_idx]
-			self._draw_search_highlight(pane, word, is_current=True)
+			pane, word_indices = self.search_results[self.current_search_index]
+			for word_idx in word_indices:
+				word = pane.words_data[word_idx]
+				self._draw_search_highlight(pane, word, is_current=True)
 	
 	def _go_to_search_result(self):
 		"""Navigate to the current search result."""
@@ -2521,14 +2603,16 @@ class PDFViewerApp:
 		self._highlight_search_results()
 		
 		# Get current result
-		pane, word_idx = self.search_results[self.current_search_index]
-		word = pane.words_data[word_idx]
+		pane, word_indices = self.search_results[self.current_search_index]
 		
-		# Draw current result with different highlight
-		self._draw_search_highlight(pane, word, is_current=True)
+		# Draw current result with different highlight (all words in phrase)
+		for word_idx in word_indices:
+			word = pane.words_data[word_idx]
+			self._draw_search_highlight(pane, word, is_current=True)
 		
-		# Scroll to the word
-		self._scroll_to_word(pane, word)
+		# Scroll to the first word of the phrase
+		first_word = pane.words_data[word_indices[0]]
+		self._scroll_to_word(pane, first_word)
 		
 		# Update label
 		self.search_result_label.config(
