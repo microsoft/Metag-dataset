@@ -30,6 +30,12 @@ class OpenReviewScraper:
         # Load credentials from environment variables
         self.username = os.environ.get('OPENREVIEW_USERNAME')
         self.password = os.environ.get('OPENREVIEW_PASSWORD')
+
+        self.client = openreview.api.OpenReviewClient(
+            baseurl='https://api2.openreview.net',
+            username=self.username,
+            password=self.password
+        )
         
         if not self.username:
             raise ValueError('OPENREVIEW_USERNAME environment variable is not set')
@@ -37,11 +43,8 @@ class OpenReviewScraper:
             raise ValueError('OPENREVIEW_PASSWORD environment variable is not set')
 
     def fetch_papers(self) -> list:
-        client = openreview.api.OpenReviewClient(
-            baseurl='https://api2.openreview.net',
-            username=self.username,
-            password=self.password
-        )
+
+        client = self.client
 
         reply_type = "Decision" # Check decisions for accepted papers
 
@@ -82,23 +85,21 @@ class OpenReviewScraper:
         return output_file
 
 
-    def download_papers(self, input_file: str):
+    def download_papers(self, input_file: str, output_dir: str = None):
         """
         Download PDFs for papers from the openreview scrape using authenticated client
         Args:
             input_file: Path to the JSON file containing paper metadata from OpenReview
+            output_dir: Directory to save PDFs (defaults to same directory as input_file + '/PDFs')
         """
         # Use authenticated client for better rate limits
-        client = openreview.api.OpenReviewClient(
-            baseurl='https://api2.openreview.net',
-            username=self.username,
-            password=self.password
-        )
+        client = self.client
 
         with open(input_file, 'r') as f:
             papers = json.load(f)
         
-        output_dir = os.path.join(os.path.dirname(input_file), 'PDFs')
+        if output_dir is None:
+            output_dir = os.path.join(os.path.dirname(input_file), 'PDFs')
         os.makedirs(output_dir, exist_ok=True)
         
         output_paths = []
@@ -151,6 +152,168 @@ class OpenReviewScraper:
                 output_paths.append(None)
                     
         return output_dir, output_paths
+    
+
+    def fetch_reviews(self, id) -> list:
+        """
+        Fetch reviews for papers in the conference by id
+        """
+        client = self.client
+
+        submission = client.get_note(id, details='replies')
+        replies = submission.details['replies']
+        for reply in replies:
+            if any(invitation.endswith('Official_Review') for invitation in reply['invitations']):
+                reviews = client.get_notes(invitation=reply['invitations'][0])
+        
+        return [review.to_json() for review in reviews]
+
+    def fetch_reviewer_author_dialogues(self, note_id: str) -> list:
+        """
+        Extract the entire reviewer-author dialogue for a paper.
+        Each dialogue thread (starting from a review) is a single entry.
+        
+        Args:
+            note_id: The OpenReview note ID (forum ID) of the paper
+            
+        Returns:
+            List of dialogue dictionaries, each containing:
+            - reviewer_id: Anonymous reviewer identifier
+            - review: The initial review content
+            - dialogue: List of back-and-forth comments in chronological order
+        """
+        client = self.client
+        
+        # Get the submission with all replies
+        submission = client.get_note(note_id, details='replies')
+        replies = submission.details['replies']
+        
+        # Build a map of id -> reply for quick lookup
+        reply_map = {reply['id']: reply for reply in replies}
+        
+        # Find all reviews (starting points for dialogues)
+        reviews = []
+        for reply in replies:
+            if any('Official_Review' in inv for inv in reply['invitations']):
+                reviews.append(reply)
+        
+        # Find all official comments
+        comments = []
+        for reply in replies:
+            if any('Official_Comment' in inv for inv in reply['invitations']):
+                comments.append(reply)
+        
+        # Build dialogue threads for each review
+        dialogues = []
+        
+        for review in reviews:
+            # Extract reviewer identifier from signatures
+            reviewer_id = review['signatures'][0] if review['signatures'] else 'Unknown'
+            # Extract just the reviewer number (e.g., "Reviewer_ABC1" from full path)
+            if '/' in reviewer_id:
+                reviewer_id = reviewer_id.split('/')[-1]
+            
+            # Build the dialogue thread
+            dialogue_thread = []
+            
+            # Find all comments that are part of this review's thread
+            # We need to build a tree and flatten it chronologically
+            def get_thread_comments(parent_id: str) -> list:
+                """Recursively get all comments in a thread"""
+                thread = []
+                for comment in comments:
+                    if comment.get('replyto') == parent_id:
+                        # Determine if this is an author or reviewer response
+                        signatures = comment.get('signatures', [])
+                        is_author = any('Authors' in sig for sig in signatures)
+                        is_reviewer = any('Reviewer' in sig for sig in signatures)
+                        
+                        commenter_type = 'author' if is_author else ('reviewer' if is_reviewer else 'other')
+                        commenter_id = signatures[0].split('/')[-1] if signatures else 'Unknown'
+                        
+                        comment_entry = {
+                            'id': comment['id'],
+                            'commenter_type': commenter_type,
+                            'commenter_id': commenter_id,
+                            'content': comment.get('content', {}),
+                            'created_date': comment.get('cdate'),
+                            'replyto': parent_id
+                        }
+                        thread.append(comment_entry)
+                        
+                        # Recursively get replies to this comment
+                        thread.extend(get_thread_comments(comment['id']))
+                
+                return thread
+            
+            # Get all comments in this review's thread
+            thread_comments = get_thread_comments(review['id'])
+            
+            # Sort by creation date
+            thread_comments.sort(key=lambda x: x.get('created_date', 0) or 0)
+            
+            dialogue_entry = {
+                'reviewer_id': reviewer_id,
+                'review': {
+                    'id': review['id'],
+                    'content': review.get('content', {}),
+                    'created_date': review.get('cdate')
+                },
+                'dialogue': thread_comments
+            }
+            
+            dialogues.append(dialogue_entry)
+        
+        return dialogues
+
+    def fetch_all_dialogues_for_papers(self, input_file: str, output_file: str = None) -> str:
+        """
+        Fetch reviewer-author dialogues for all papers in a JSON file.
+        
+        Args:
+            input_file: Path to JSON file containing papers with 'id' field
+            output_file: Path to save output (defaults to input_file with _dialogues suffix)
+            
+        Returns:
+            Path to the output file
+        """
+        with open(input_file, 'r') as f:
+            papers = json.load(f)
+        
+        results = []
+        
+        for paper in tqdm(papers, desc="Fetching dialogues"):
+            paper_id = paper.get('id')
+            title = paper.get('content', {}).get('title', {}).get('value', 'Unknown')
+            
+            try:
+                dialogues = self.fetch_reviewer_author_dialogues(paper_id)
+                results.append({
+                    'paper_id': paper_id,
+                    'title': title,
+                    'dialogues': dialogues
+                })
+            except Exception as e:
+                tqdm.write(f"Error fetching dialogues for {paper_id}: {e}")
+                results.append({
+                    'paper_id': paper_id,
+                    'title': title,
+                    'dialogues': [],
+                    'error': str(e)
+                })
+            
+            # Small delay to be respectful of API
+            time.sleep(0.3)
+        
+        # Save results
+        if output_file is None:
+            output_file = input_file.replace('.json', '_with_dialogues.json')
+        
+        with open(output_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        print(f"Saved dialogues for {len(results)} papers to {output_file}")
+        return output_file
 
 
 class SemanticScholarIndexer:
@@ -432,8 +595,10 @@ class ArxivPDFDownloader:
         versions = self.get_arxiv_versions(base_arxiv_id)
         
         if not versions:
-            # If we can't get version info, return the original ID
-            return arxiv_id
+            # If we can't get version info, skip this paper to avoid downloading
+            # a version that may have been submitted after the conference deadline
+            tqdm.write(f"Could not fetch version history for {base_arxiv_id}, skipping to avoid post-submission version")
+            return None
         
         # Find the latest version submitted before the submission date
         suitable_versions = [
@@ -615,7 +780,8 @@ if __name__ == '__main__':
                 )
                 openreview_future = executor.submit(
                     scraper.download_papers,
-                    pdf_input
+                    pdf_input,
+                    output_dir=args.pdf_output_dir
                 )
                 
                 # Wait for both to complete and get results

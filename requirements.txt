@@ -1,0 +1,14 @@
+openreview-py
+semanticscholar
+python-Levenshtein
+bautifulsoup4
+pymupdf 
+Pillow 
+klembord 
+tkinterdnd2
+pyautogui
+torch
+torchvision
+transformers
+accelerate
+rank-bm25
