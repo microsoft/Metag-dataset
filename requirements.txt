@@ -1,7 +1,7 @@
 openreview-py
 semanticscholar
 python-Levenshtein
-bautifulsoup4
+beautifulsoup4
 pymupdf 
 Pillow 
 klembord 
