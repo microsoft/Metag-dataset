@@ -17,8 +17,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Add the PDF-Diff-Viewer directory to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'PDF-Diff-Viewer'))
+# Add the PDF-Diff-Functions directory to the path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'PDF-Diff-Functions'))
 from pdf_diff_extractor import PDFDiffExtractor
 
 
