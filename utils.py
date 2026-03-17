@@ -12,3 +12,14 @@ def parse_json_response(response_string: str) -> dict:
         json_str = response_string.strip()
     
     return json.loads(json_str)
+
+
+def load_jsonl(file_path: str) -> list[dict]:
+    """Load a JSONL file and return a list of dictionaries."""
+    data = []
+    with open(file_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                data.append(json.loads(line))
+    return data

@@ -734,6 +734,8 @@ if __name__ == '__main__':
 
     if 'ICLR' in args.conference_id:
         venue = 'ICLR'
+    elif 'NeurIPS' in args.conference_id:
+        venue = 'NeurIPS'
     
     if '2024' in args.conference_id:
         year = '2024'
