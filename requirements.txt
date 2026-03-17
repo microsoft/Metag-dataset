@@ -12,3 +12,9 @@ torchvision
 transformers
 accelerate
 rank-bm25
+peft
+trl
+datasets
+bitsandbytes
+rouge-score
+openai

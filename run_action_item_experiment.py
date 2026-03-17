@@ -128,12 +128,14 @@ def run_finetune(
     per_device_batch_size: int = 1,
     gradient_accumulation_steps: int = 4,
     max_seq_length: int = 4096,
+    use_vllm_inference: bool = False,
+    auto_start_server: bool = True,
 ) -> list[dict]:
     """Fine-tune a model with LoRA, then evaluate on a split."""
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     from peft import LoraConfig, get_peft_model, TaskType
-    from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
+    from trl import SFTTrainer, SFTConfig
     from datasets import Dataset
 
     train_data = load_split(train_path)
@@ -201,7 +203,7 @@ def run_finetune(
         save_total_limit=2,
         load_best_model_at_end=True,
         bf16=True,
-        max_seq_length=max_seq_length,
+        max_length=max_seq_length,
         dataset_text_field="text",
         report_to="none",
     )
@@ -218,6 +220,9 @@ def run_finetune(
     logger.info("Starting fine-tuning...")
     trainer.train()
 
+    # Save training loss curves
+    _save_loss_curves(trainer, output_dir)
+
     # Save adapter
     adapter_path = os.path.join(output_dir, "adapter")
     model.save_pretrained(adapter_path)
@@ -225,29 +230,93 @@ def run_finetune(
     logger.info(f"Saved LoRA adapter to {adapter_path}")
 
     # ── Inference with fine-tuned model ──
-    logger.info("Running inference with fine-tuned model...")
     prompts = [build_prompt(entry['input']) for entry in eval_data]
-    responses = []
 
-    model.eval()
-    for prompt in prompts:
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=config.max_tokens,
-                temperature=config.temperature,
-                top_p=config.top_p,
-                do_sample=config.temperature > 0,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-        generated = outputs[0][inputs["input_ids"].shape[1]:]
-        responses.append(tokenizer.decode(generated, skip_special_tokens=True))
+    if use_vllm_inference:
+        # Free GPU memory before starting vLLM
+        del model
+        del trainer
+        torch.cuda.empty_cache()
+
+        # Serve the base model with LoRA adapter via vLLM
+        logger.info(f"Starting vLLM with base model + LoRA adapter at {adapter_path}")
+        with VLLMInference(
+            config,
+            auto_start_server=auto_start_server,
+            lora_adapter_path=adapter_path,
+        ) as inference:
+            responses = inference.generate(prompts, batch_size=config.batch_size)
+    else:
+        # Use the in-memory model directly — simpler for small eval sets
+        logger.info(f"Running in-memory inference on {len(eval_data)} papers...")
+        from tqdm import tqdm as _tqdm
+        responses = []
+
+        model.eval()
+        for i, prompt in enumerate(_tqdm(prompts, desc="Fine-tuned inference")):
+            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=config.max_tokens,
+                    temperature=config.temperature,
+                    top_p=config.top_p,
+                    do_sample=config.temperature > 0,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+            generated = outputs[0][inputs["input_ids"].shape[1]:]
+            response_text = tokenizer.decode(generated, skip_special_tokens=True)
+            responses.append(response_text)
+            logger.debug(f"Paper {eval_data[i]['paper_id']}: generated {len(generated)} tokens")
 
     return _collect_results(eval_data, responses, output_path)
 
 
 # ── Shared helpers ───────────────────────────────────────────────────────────
+
+
+def _save_loss_curves(trainer, output_dir: str):
+    """Save training and eval loss curves as a PNG and JSON."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    log_history = trainer.state.log_history
+
+    train_steps, train_losses = [], []
+    eval_steps, eval_losses = [], []
+
+    for entry in log_history:
+        if 'loss' in entry:
+            train_steps.append(entry['step'])
+            train_losses.append(entry['loss'])
+        if 'eval_loss' in entry:
+            eval_steps.append(entry['step'])
+            eval_losses.append(entry['eval_loss'])
+
+    # Save raw log history as JSON
+    log_path = os.path.join(output_dir, 'training_log.json')
+    with open(log_path, 'w') as f:
+        json.dump(log_history, f, indent=2)
+    logger.info(f"Saved training log to {log_path}")
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if train_steps:
+        ax.plot(train_steps, train_losses, label='Train Loss', marker='.')
+    if eval_steps:
+        ax.plot(eval_steps, eval_losses, label='Eval Loss', marker='s')
+    ax.set_xlabel('Step')
+    ax.set_ylabel('Loss')
+    ax.set_title('Training & Eval Loss')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    plot_path = os.path.join(output_dir, 'loss_curves.png')
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    logger.info(f"Saved loss curves to {plot_path}")
 
 
 def _collect_results(data: list[dict], responses: list[str], output_path: str) -> list[dict]:
@@ -302,7 +371,9 @@ if __name__ == '__main__':
     parser.add_argument('--output-dir', type=str, default='experiment_results',
                         help='Directory to save experiment outputs')
     parser.add_argument('--no-auto-start', action='store_true',
-                        help='Do not auto-start vLLM Docker server (zero-shot only)')
+                        help='Do not auto-start vLLM Docker server')
+    parser.add_argument('--use-vllm-inference', action='store_true',
+                        help='After fine-tuning, merge adapter and use vLLM for inference (better for large eval sets)')
 
     # Fine-tuning hyperparams
     parser.add_argument('--epochs', type=int, default=3)
@@ -360,6 +431,8 @@ if __name__ == '__main__':
             per_device_batch_size=args.per_device_batch_size,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             max_seq_length=args.max_seq_length,
+            use_vllm_inference=args.use_vllm_inference,
+            auto_start_server=not args.no_auto_start,
         )
 
     # ── Evaluate ──

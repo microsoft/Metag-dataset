@@ -373,6 +373,7 @@ class VLLMInference(BaseInference):
         port: int = 8000,
         hf_token: Optional[str] = None,
         auto_start_server: bool = True,
+        lora_adapter_path: Optional[str] = None,
     ):
         """
         Initialize the vLLM inference engine with Docker-based server.
@@ -385,6 +386,7 @@ class VLLMInference(BaseInference):
             port: Port to expose the vLLM server on.
             hf_token: HuggingFace token for accessing gated models. If None, uses HF_TOKEN env var.
             auto_start_server: Whether to automatically start the Docker server.
+            lora_adapter_path: Optional path to a LoRA adapter directory to serve alongside the base model.
         """
         super().__init__(config)
         
@@ -399,6 +401,8 @@ class VLLMInference(BaseInference):
         self.hf_token = hf_token or os.environ.get("HF_TOKEN", "")
         self.container_name = f"vllm-server-{port}"
         self._container_id = None
+        self.lora_adapter_path = os.path.abspath(lora_adapter_path) if lora_adapter_path else None
+        self._lora_name = "finetuned" if lora_adapter_path else None
         
         # Initialize OpenAI client pointing to local vLLM server
         self.client = OpenAI(
@@ -434,13 +438,29 @@ class VLLMInference(BaseInference):
             "-p", f"{self.port}:8000",
             "--ipc=host",
             "--name", self.container_name,
+        ]
+        
+        # Mount LoRA adapter directory if provided
+        if self.lora_adapter_path:
+            cmd.extend(["-v", f"{self.lora_adapter_path}:/adapter"])
+        
+        cmd.extend([
             "vllm/vllm-openai:latest",
             "--model", self.config.model_name,
             "--tensor-parallel-size", str(self.tensor_parallel_size),
             "--gpu-memory-utilization", str(self.gpu_memory_utilization),
-        ]
+        ])
+        
+        # Enable LoRA support if adapter path is provided
+        if self.lora_adapter_path:
+            cmd.extend([
+                "--enable-lora",
+                "--lora-modules", f"{self._lora_name}=/adapter",
+            ])
         
         print(f"Starting vLLM Docker server with model: {self.config.model_name}")
+        if self.lora_adapter_path:
+            print(f"  LoRA adapter: {self.lora_adapter_path}")
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -538,8 +558,11 @@ class VLLMInference(BaseInference):
             batch_end = min(batch_start + batch_size, len(prompts))
             batch_prompts = prompts[batch_start:batch_end]
             
+            # Use LoRA model name if adapter is loaded, otherwise base model
+            model_name = self._lora_name if self._lora_name else self.config.model_name
+            
             response = self.client.completions.create(
-                model=self.config.model_name,
+                model=model_name,
                 prompt=batch_prompts,  # Pass list of prompts
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
@@ -561,8 +584,9 @@ class VLLMInference(BaseInference):
         Returns:
             The generated response.
         """
+        model_name = self._lora_name if self._lora_name else self.config.model_name
         response = self.client.completions.create(
-            model=self.config.model_name,
+            model=model_name,
             prompt=prompt,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
