@@ -33,13 +33,30 @@ def extract_words_from_pdf(pdf_path, ignore_ligatures=False):
     Returns:
         list: List of word strings in reading order
     """
+    words_data = extract_words_with_data(pdf_path, ignore_ligatures)
+    if words_data is None:
+        return None
+    return [w["text"] for w in words_data]
+
+
+def extract_words_with_data(pdf_path, ignore_ligatures=False):
+    """
+    Extracts all words from a PDF document with their coordinates and page numbers.
+    
+    Args:
+        pdf_path (str): Path to the PDF file
+        ignore_ligatures (bool): If True, don't expand ligatures
+    
+    Returns:
+        list: List of word dicts with text, page_num, x0, y0, x1, y1
+    """
     try:
         pdf_document = fitz.open(pdf_path)
     except Exception as e:
         print(f"Error opening PDF '{pdf_path}': {e}", file=sys.stderr)
         return None
     
-    all_words = []
+    all_words_data = []
     LINE_TOLERANCE_Y = 3  # Tolerance for grouping words into lines
     
     for page_num, page in enumerate(pdf_document):
@@ -91,15 +108,19 @@ def extract_words_from_pdf(pdf_path, ignore_ligatures=False):
             lg['y_center']
         ))
         
-        # Extract words in reading order
+        # Extract words in reading order with full data
         for line_group in grouped_lines:
             line_group['words'].sort(key=lambda w: w[0])  # Sort by x0 coordinate
             for word_info in line_group['words']:
-                word_text = word_info[4]
-                all_words.append(word_text)
+                x0, y0, x1, y1, word_text, _, _, _ = word_info[:8]
+                all_words_data.append({
+                    "text": word_text,
+                    "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                    "page_num": page_num,
+                })
     
     pdf_document.close()
-    return all_words
+    return all_words_data
 
 
 def normalize_words(words, case_insensitive=False, ignore_quotes=False):
@@ -581,6 +602,78 @@ class PDFDiffExtractor:
         return result
 
 
+def _get_context_words(words_data, start_idx, end_idx, num_context=5):
+    """
+    Get surrounding context words before and after a diff region.
+    
+    Args:
+        words_data (list): Full list of word dicts
+        start_idx (int): Start index of the diff region
+        end_idx (int): End index of the diff region (exclusive)
+        num_context (int): Number of context words to include
+    
+    Returns:
+        tuple: (context_before, context_after) as strings
+    """
+    context_before_words = []
+    for i in range(max(0, start_idx - num_context), start_idx):
+        context_before_words.append(words_data[i]["text"])
+    
+    context_after_words = []
+    for i in range(end_idx, min(len(words_data), end_idx + num_context)):
+        context_after_words.append(words_data[i]["text"])
+    
+    return " ".join(context_before_words), " ".join(context_after_words)
+
+
+def _get_highlight_color(tag, is_moved):
+    """
+    Determine highlight color based on tag and is_moved flag,
+    matching the logic in pdf_viewer_clickable.py.
+    
+    Returns:
+        str: "red" for deletions, "green" for insertions, "blue" for moved, None for equal
+    """
+    if tag == "equal":
+        return None
+    if is_moved:
+        return "blue"
+    if tag == "delete":
+        return "red"
+    if tag == "insert":
+        return "green"
+    if tag == "replace":
+        return "red/green"  # Both sides involved
+    return None
+
+
+def _get_page_nums(words_data, start_idx, end_idx):
+    """
+    Get the set of page numbers spanned by words in [start_idx, end_idx).
+    
+    Returns:
+        list: Sorted list of unique page numbers
+    """
+    if start_idx >= end_idx or not words_data:
+        return []
+    pages = set()
+    for i in range(start_idx, min(end_idx, len(words_data))):
+        pages.add(words_data[i]["page_num"])
+    return sorted(pages)
+
+
+def _get_words_slice(words_data, start_idx, end_idx):
+    """
+    Get word dicts for the given index range.
+    
+    Returns:
+        list: List of word dicts with text, page_num, x0, y0, x1, y1
+    """
+    if start_idx >= end_idx or not words_data:
+        return []
+    return words_data[start_idx:end_idx]
+
+
 def compare_pdfs(pdf1_path, pdf2_path, case_insensitive=False, ignore_quotes=False, ignore_ligatures=False, use_git_diff=False):
     """
     Compare two PDFs and generate diff opcodes with text content.
@@ -597,14 +690,17 @@ def compare_pdfs(pdf1_path, pdf2_path, case_insensitive=False, ignore_quotes=Fal
         dict: Comparison results with opcodes and metadata
     """
     print(f"Extracting words from '{pdf1_path}'...")
-    words1 = extract_words_from_pdf(pdf1_path, ignore_ligatures)
-    if words1 is None:
+    words_data1 = extract_words_with_data(pdf1_path, ignore_ligatures)
+    if words_data1 is None:
         return None
     
     print(f"Extracting words from '{pdf2_path}'...")
-    words2 = extract_words_from_pdf(pdf2_path, ignore_ligatures)
-    if words2 is None:
+    words_data2 = extract_words_with_data(pdf2_path, ignore_ligatures)
+    if words_data2 is None:
         return None
+    
+    words1 = [w["text"] for w in words_data1]
+    words2 = [w["text"] for w in words_data2]
     
     print(f"Extracted {len(words1)} words from first PDF")
     print(f"Extracted {len(words2)} words from second PDF")
@@ -651,6 +747,12 @@ def compare_pdfs(pdf1_path, pdf2_path, case_insensitive=False, ignore_quotes=Fal
             tag, i1, i2, j1, j2 = opcode
             is_moved = False
         
+        highlight_color = _get_highlight_color(tag, is_moved)
+        
+        # Get context around the diff (matching pdf_viewer_clickable.py behavior)
+        context_before_pdf1, context_after_pdf1 = _get_context_words(words_data1, i1, i2)
+        context_before_pdf2, context_after_pdf2 = _get_context_words(words_data2, j1, j2)
+        
         opcode_entry = {
             "tag": tag,
             "i1": i1,
@@ -658,11 +760,18 @@ def compare_pdfs(pdf1_path, pdf2_path, case_insensitive=False, ignore_quotes=Fal
             "j1": j1,
             "j2": j2,
             "text_pdf1": get_text_from_indices(words1, i1, i2),
-            "text_pdf2": get_text_from_indices(words2, j1, j2)
+            "text_pdf2": get_text_from_indices(words2, j1, j2),
+            "is_moved": is_moved,
+            "highlight_color": highlight_color,
+            "context_before_pdf1": context_before_pdf1,
+            "context_after_pdf1": context_after_pdf1,
+            "context_before_pdf2": context_before_pdf2,
+            "context_after_pdf2": context_after_pdf2,
+            "page_nums_pdf1": _get_page_nums(words_data1, i1, i2),
+            "page_nums_pdf2": _get_page_nums(words_data2, j1, j2),
+            "words_pdf1": _get_words_slice(words_data1, i1, i2),
+            "words_pdf2": _get_words_slice(words_data2, j1, j2),
         }
-        
-        if use_git_diff:
-            opcode_entry["is_moved"] = is_moved
         
         result["opcodes"].append(opcode_entry)
     
