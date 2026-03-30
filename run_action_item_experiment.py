@@ -208,6 +208,24 @@ def run_finetune(
         report_to="none",
     )
 
+    # ── Data collator that injects token_type_ids (required by Gemma 3) ──
+    from dataclasses import dataclass
+
+    @dataclass
+    class CollatorWithTokenTypeIds:
+        tokenizer: object
+        mlm: bool = False
+
+        def __call__(self, features):
+            from transformers import DataCollatorForLanguageModeling
+            collator = DataCollatorForLanguageModeling(
+                tokenizer=self.tokenizer, mlm=self.mlm
+            )
+            batch = collator(features)
+            if "token_type_ids" not in batch:
+                batch["token_type_ids"] = torch.zeros_like(batch["input_ids"])
+            return batch
+
     # ── Train ──
     trainer = SFTTrainer(
         model=model,
@@ -215,6 +233,7 @@ def run_finetune(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
+        data_collator=CollatorWithTokenTypeIds(tokenizer),
     )
 
     logger.info("Starting fine-tuning...")
@@ -362,7 +381,7 @@ if __name__ == '__main__':
     parser.add_argument('--split', type=str, default='test',
                         choices=['train', 'val', 'test'],
                         help='Which split to evaluate on')
-    parser.add_argument('--splits-dir', type=str, default='splits',
+    parser.add_argument('--splits-dir', type=str, default='processed_datasets/ICLR/Action_item',
                         help='Directory containing train/val/test JSONL files')
 
     # Model / inference

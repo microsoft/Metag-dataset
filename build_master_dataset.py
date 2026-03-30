@@ -388,6 +388,68 @@ def build_master_dataset(
         print(f"  {split_name}: {n_papers} papers, {n_items} action items "
               f"({n_with_diffs} with matched diffs) -> {path}")
 
+    # ── Generate task-specific processed datasets ──
+    processed_base = os.path.join(
+        os.path.dirname(output_dir) or '.', 'processed_datasets',
+        os.path.basename(output_dir).replace('Master_DS_', ''),
+    )
+
+    # Action_item: dialogue -> predict all action items
+    ai_dir = os.path.join(processed_base, 'Action_item')
+    os.makedirs(ai_dir, exist_ok=True)
+    print(f"\nProcessed datasets (Action_item):")
+    for split_name in ['train', 'val', 'test']:
+        records = split_data.get(split_name, [])
+        path = os.path.join(ai_dir, f'{split_name}.jsonl')
+        with open(path, 'w') as f:
+            for r in records:
+                action_items = [
+                    {'comment': ai['filtered_comment'], 'response': ai['filtered_response']}
+                    for ai in r['action_items']
+                ]
+                f.write(json.dumps({
+                    'paper_id': r['paper_id'],
+                    'input': r['dialogue'],
+                    'target': {'action_items': action_items},
+                }) + '\n')
+        n_items = sum(len(r['action_items']) for r in records)
+        print(f"  {split_name}: {len(records)} papers, {n_items} action items -> {path}")
+
+    # Diff_prediction: per (action_item, paper) with per-diff labels
+    dp_dir = os.path.join(processed_base, 'Diff_prediction')
+    os.makedirs(dp_dir, exist_ok=True)
+    print(f"\nProcessed datasets (Diff_prediction):")
+    for split_name in ['train', 'val', 'test']:
+        records = split_data.get(split_name, [])
+        path = os.path.join(dp_dir, f'{split_name}.jsonl')
+        n_entries = 0
+        n_positive = 0
+        with open(path, 'w') as f:
+            for r in records:
+                for ai in r['action_items']:
+                    relevant_set = set(ai['relevant_diff_indices'])
+                    labels = [d['diff_index'] in relevant_set for d in r['all_diffs']]
+                    f.write(json.dumps({
+                        'paper_id': r['paper_id'],
+                        'action_item': {
+                            'comment': ai['filtered_comment'],
+                            'response': ai['filtered_response'],
+                        },
+                        'all_diffs': r['all_diffs'],
+                        'labels': labels,
+                        'relevant_diff_indices': ai['relevant_diff_indices'],
+                    }) + '\n')
+                    n_entries += 1
+                    n_positive += len(relevant_set)
+        n_with = sum(
+            1 for r in records for ai in r['action_items']
+            if ai['relevant_diff_indices']
+        )
+        print(f"  {split_name}: {n_entries} entries ({n_with} with positives) -> {path}")
+
+    # End_to_end placeholder
+    os.makedirs(os.path.join(processed_base, 'End_to_end'), exist_ok=True)
+
     print(f"\nDone. Output in {output_dir}/")
 
 
