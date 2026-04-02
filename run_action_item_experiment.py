@@ -111,6 +111,33 @@ def run_zero_shot(
     return _collect_results(data, responses, output_path)
 
 
+# ── Eval with saved adapter (vLLM) ──────────────────────────────────────────
+
+
+def run_eval_adapter(
+    split_path: str,
+    config: InferenceConfig,
+    output_path: str,
+    adapter_path: str,
+    auto_start_server: bool = True,
+) -> list[dict]:
+    """Run inference using a saved LoRA adapter served via vLLM."""
+    data = load_split(split_path)
+    logger.info(f"Loaded {len(data)} papers from {split_path}")
+
+    prompts = [build_prompt(entry['input']) for entry in data]
+
+    logger.info(f"Running vLLM inference with adapter: {adapter_path}")
+    with VLLMInference(
+        config,
+        auto_start_server=auto_start_server,
+        lora_adapter_path=adapter_path,
+    ) as inference:
+        responses = inference.generate(prompts, batch_size=config.batch_size)
+
+    return _collect_results(data, responses, output_path)
+
+
 # ── Fine-tuning ──────────────────────────────────────────────────────────────
 
 
@@ -374,8 +401,8 @@ if __name__ == '__main__':
 
     # Mode
     parser.add_argument('--mode', type=str, default='zero-shot',
-                        choices=['zero-shot', 'finetune'],
-                        help='Experiment mode: zero-shot or finetune')
+                        choices=['zero-shot', 'finetune', 'eval-adapter'],
+                        help='Experiment mode: zero-shot, finetune, or eval-adapter')
 
     # Data
     parser.add_argument('--split', type=str, default='test',
@@ -393,6 +420,8 @@ if __name__ == '__main__':
                         help='Do not auto-start vLLM Docker server')
     parser.add_argument('--use-vllm-inference', action='store_true',
                         help='After fine-tuning, merge adapter and use vLLM for inference (better for large eval sets)')
+    parser.add_argument('--adapter-path', type=str, default=None,
+                        help='Path to a saved LoRA adapter (for eval-adapter mode)')
 
     # Fine-tuning hyperparams
     parser.add_argument('--epochs', type=int, default=3)
@@ -451,6 +480,17 @@ if __name__ == '__main__':
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             max_seq_length=args.max_seq_length,
             use_vllm_inference=args.use_vllm_inference,
+            auto_start_server=not args.no_auto_start,
+        )
+    elif args.mode == 'eval-adapter':
+        adapter = args.adapter_path or os.path.join(args.output_dir, 'adapter')
+        if not os.path.exists(adapter):
+            raise FileNotFoundError(f"Adapter not found: {adapter}")
+        results = run_eval_adapter(
+            split_path=eval_split_path,
+            config=config,
+            output_path=output_path,
+            adapter_path=adapter,
             auto_start_server=not args.no_auto_start,
         )
 

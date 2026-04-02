@@ -1,0 +1,164 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhead[L]{Lab Notebook: Diff Classification Experiments}
+\fancyhead[R]{\today}
+
+\title{Lab Notebook: Diff Classification Experiments\\
+\large Linking Reviewer Action Items to PDF Diffs}
+\author{Review Agent Dataset Project}
+\date{March--April 2026}
+
+\begin{document}
+\maketitle
+
+\section{Task Description}
+Given a reviewer-author action item (a reviewer concern and the author's response describing a change), classify which PDF diffs (between the original and revised paper) are relevant to that action item.
+
+\paragraph{Challenge.} Papers have $\sim$1{,}000 diffs on average, with only $\sim$0.4\% being relevant to any given action item---an extreme class imbalance problem.
+
+\section{Dataset Statistics}
+
+\begin{table}[h]
+\centering
+\caption{Diff Prediction Dataset (from Master\_DS\_ICLR)}
+\label{tab:data_stats}
+\begin{tabular}{lrrrrr}
+\toprule
+Split & Entries & With Positives & All-Negative & Total Pairs & Pos.\ Rate \\
+\midrule
+Train & 415 & 248 & 167 & 423{,}302 & 0.37\% \\
+Val   & 74  & 41  & 33  & 87{,}751  & 0.31\% \\
+Test  & 86  & 60  & 26  & 100{,}551 & 0.49\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Methods}
+
+\subsection{Approach 1: LLM Zero-Shot (Gemma-3-27B-IT)}
+Diffs are serialized into text and presented in batches of 50 to the LLM with the action item. The LLM returns a JSON list of relevant \texttt{diff\_index} values. Trivial diffs ($\leq$2 words) are pre-filtered.
+
+\subsection{Approach 2: LLM Fine-Tuned (LoRA on Gemma-3-27B-IT)}
+Same prompting approach as zero-shot, but the model is fine-tuned with LoRA (rank 8, $\alpha$=16) on the training set for 3 epochs. Training target is the JSON output with correct \texttt{relevant\_diff\_indices}. 37 hours of training on 5{,}769 steps.
+
+\subsection{Approach 3: Embedding + MLP Classifier (MiniLM)}
+Action items and diffs are independently embedded using \texttt{all-MiniLM-L6-v2} (384-dim). A 3-layer MLP classifier operates on the concatenation $[\mathbf{e}_\text{ai}; \mathbf{e}_\text{diff}; \mathbf{e}_\text{ai} \odot \mathbf{e}_\text{diff}]$ (1{,}152-dim input). Trained with 10:1 negative sampling and weighted BCE loss ($w_\text{pos}=10$) for 30 epochs.
+
+\subsection{Approach 4: Embedding + MLP Classifier (Gemma-3-27B-IT)}
+Same MLP architecture as Approach 3, but using mean-pooled last hidden state embeddings from Gemma-3-27B-IT (3{,}584-dim) loaded in 4-bit quantization. \textit{(In Progress)}
+
+\section{Results}
+
+\subsection{Main Results}
+
+\begin{table}[h]
+\centering
+\caption{Diff Classification Results---Micro-Averaged Metrics}
+\label{tab:diff_cls_micro}
+\begin{tabular}{llcccccc}
+\toprule
+Method & Split & P & R & F1 & TP & FP & FN \\
+\midrule
+\multirow{2}{*}{LLM Zero-shot}
+ & Val  & .012 & .634 & .023 & 173 & 14{,}448 & 100 \\
+ & Test & .014 & .601 & .027 & 297 & 21{,}178 & 197 \\
+\midrule
+\multirow{2}{*}{LLM Fine-tuned}
+ & Val  & .074 & .297 & .118 & 81 & 1{,}016 & 192 \\
+ & Test & .041 & .198 & .068 & 98 & 2{,}304 & 396 \\
+\midrule
+Embed MLP (MiniLM)
+ & Val  & .016 & .260 & .030 & 71 & 4{,}429 & 202 \\
+\midrule
+\rowcolor{yellow!20}
+Embed MLP (Gemma)
+ & Val  & \multicolumn{6}{c}{\textit{In Progress}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Diff Classification Results---Macro-Averaged Metrics}
+\label{tab:diff_cls_macro}
+\begin{tabular}{llccc}
+\toprule
+Method & Split & P & R & F1 \\
+\midrule
+\multirow{2}{*}{LLM Zero-shot}
+ & Val  & .020 & .361 & .032 \\
+ & Test & .018 & .449 & .032 \\
+\midrule
+\multirow{2}{*}{LLM Fine-tuned}
+ & Val  & .015 & .035 & .016 \\
+ & Test & .023 & .113 & .035 \\
+\midrule
+Embed MLP (MiniLM)
+ & Val  & .014 & .130 & .022 \\
+\midrule
+\rowcolor{yellow!20}
+Embed MLP (Gemma)
+ & Val  & \multicolumn{3}{c}{\textit{In Progress}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Analysis}
+
+\paragraph{Zero-shot has high recall but near-zero precision.}
+The LLM flags $\sim$60\% of true relevant diffs but produces 14{,}000--21{,}000 false positives per split (out of $\sim$87--100K total diffs). This suggests the model is highly sensitive to any textual overlap between the action item and diff content, lacking the ability to distinguish meaningful changes from coincidental keyword matches.
+
+\paragraph{Fine-tuning dramatically reduces false positives.}
+LoRA fine-tuning reduces FPs by 6--14$\times$ and improves micro-F1 from 0.023$\to$0.118 on val. However, recall drops from 63\%$\to$30\%, indicating the model becomes overly conservative. The val/test gap (F1 0.118 vs 0.068) suggests some overfitting.
+
+\paragraph{Small embedding models underperform.}
+The MiniLM (384-dim) embedding + MLP approach achieves only F1=0.030 on val, comparable to zero-shot. The small embedding space likely cannot capture the nuanced semantic relationship between action items and their corresponding diffs. Gemma-27B embeddings (3{,}584-dim) may improve this.
+
+\section{Evaluation Metrics}
+
+We evaluate using standard set-based precision, recall, and F1, comparing the predicted set of relevant diff indices $\hat{D}_i$ against the ground-truth set $D_i$ for each action item $i$. We report both \textbf{micro-averaged} and \textbf{macro-averaged} metrics.
+
+Micro-averaging pools all counts across $N$ action items:
+\begin{equation}
+P_{\text{micro}} = \frac{\sum_{i=1}^{N} |D_i \cap \hat{D}_i|}{\sum_{i=1}^{N} |\hat{D}_i|}, \quad
+R_{\text{micro}} = \frac{\sum_{i=1}^{N} |D_i \cap \hat{D}_i|}{\sum_{i=1}^{N} |D_i|}
+\end{equation}
+
+Macro-averaging computes per-item then averages:
+\begin{equation}
+P_{\text{macro}} = \frac{1}{N}\sum_{i=1}^{N} \frac{|D_i \cap \hat{D}_i|}{|\hat{D}_i|}, \quad
+R_{\text{macro}} = \frac{1}{N}\sum_{i=1}^{N} \frac{|D_i \cap \hat{D}_i|}{|D_i|}
+\end{equation}
+
+In both cases, $F1 = 2PR/(P+R)$.
+
+\section{Experiment Log}
+
+\begin{itemize}
+\item \textbf{2026-03-30}: Zero-shot val completed (74 entries, 1{,}611 prompts, $\sim$40 min via vLLM)
+\item \textbf{2026-03-31}: Zero-shot test completed (86 entries, 1{,}828 prompts, $\sim$45 min via vLLM)
+\item \textbf{2026-03-30 -- 03-31}: LoRA fine-tuning completed (5{,}769 steps, 37 hours, 3 epochs)
+\item \textbf{2026-03-31}: Fine-tuned eval on val via vLLM ($\sim$90 min). Best result so far: micro-F1=0.118
+\item \textbf{2026-03-31}: Fine-tuned eval on test via vLLM ($\sim$46 min). Micro-F1=0.068
+\item \textbf{2026-04-01}: MiniLM embedding + MLP classifier on val. Micro-F1=0.030. Training took $\sim$2 min.
+\item \textbf{2026-04-02}: Gemma-27B embedding extraction started. \textit{In progress.}
+\end{itemize}
+
+\section{Next Steps}
+\begin{enumerate}
+\item Complete Gemma-27B embedding extraction and MLP training
+\item Try cross-encoder approach (jointly embed action item + diff)
+\item Explore retrieval-based approach (embed diffs, retrieve top-k by similarity to action item, then classify)
+\item Threshold tuning for the LLM fine-tuned approach to trade off precision/recall
+\item Error analysis: examine what types of diffs the model incorrectly flags
+\end{enumerate}
+
+\end{document}
