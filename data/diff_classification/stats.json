@@ -1,0 +1,85 @@
+{
+  "config": {
+    "master": "Master_DS_ICLR/master.jsonl",
+    "master_dir": "Master_DS_ICLR",
+    "output_dir": "processed_datasets/ICLR/Diff_prediction_llm",
+    "diffs_per_window": 40,
+    "include_dialogue": false,
+    "max_dialogue_chars": 6000,
+    "max_text_chars": 400,
+    "max_context_chars": 150,
+    "include_unlinked": false,
+    "prefilter": true,
+    "neg_window_ratio": 2.0,
+    "min_neg_windows": 2,
+    "seed": 42
+  },
+  "dropped": {
+    "action_item_without_linked_diff": 226
+  },
+  "splits": {
+    "train": {
+      "examples": 248,
+      "papers": 93,
+      "examples_with_relevant_diff": 248,
+      "examples_all_negative": 0,
+      "diff_pool": {
+        "total": 219569,
+        "min": 214,
+        "median": 758,
+        "mean": 885.4,
+        "max": 2148
+      },
+      "relevant_diffs": 1557,
+      "positive_rate": 0.00709,
+      "windows": {
+        "total": 999,
+        "with_relevant_diff": 333,
+        "median_prompt_tokens": 2515,
+        "max_prompt_tokens": 4489
+      }
+    },
+    "val": {
+      "examples": 41,
+      "papers": 22,
+      "examples_with_relevant_diff": 41,
+      "examples_all_negative": 0,
+      "diff_pool": {
+        "total": 41445,
+        "min": 173,
+        "median": 1003,
+        "mean": 1010.9,
+        "max": 1841
+      },
+      "relevant_diffs": 273,
+      "positive_rate": 0.00659,
+      "windows": {
+        "total": 1060,
+        "with_relevant_diff": 56,
+        "median_prompt_tokens": 2444,
+        "max_prompt_tokens": 3610
+      }
+    },
+    "test": {
+      "examples": 60,
+      "papers": 22,
+      "examples_with_relevant_diff": 60,
+      "examples_all_negative": 0,
+      "diff_pool": {
+        "total": 62772,
+        "min": 527,
+        "median": 1105,
+        "mean": 1046.2,
+        "max": 1990
+      },
+      "relevant_diffs": 494,
+      "positive_rate": 0.00787,
+      "windows": {
+        "total": 1599,
+        "with_relevant_diff": 91,
+        "median_prompt_tokens": 2452,
+        "max_prompt_tokens": 3570
+      }
+    }
+  }
+}

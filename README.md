@@ -1,69 +1,94 @@
-### Install packages
-sudo apt install python3-tk
-sudo apt-get install idle3
+# Metag Dataset
 
+Metag links reviewer-derived action items to the revisions that implement them
+in scientific papers. Each example contains a reviewer concern, the corresponding
+author response, the candidate PDF diffs between the original and revised paper,
+and labels identifying the relevant diffs.
 
+## Dataset
 
-### Set up virtual environment  
+The release is under `data/diff_classification/`:
+
+| File | Description |
+|---|---|
+| `train.jsonl` | One full diff-classification example per action item. |
+| `val.jsonl` | Validation examples with complete candidate diff pools. |
+| `test.jsonl` | Test examples with complete candidate diff pools. |
+| `train_windows.jsonl` | Model-facing training prompts containing up to 40 diffs. |
+| `val_windows.jsonl` | Model-facing validation prompts covering every candidate diff. |
+| `test_windows.jsonl` | Model-facing test prompts covering every candidate diff. |
+| `stats.json` | Dataset configuration and split statistics. |
+
+### Statistics
+
+| Split | Papers | Action items | Candidate diffs | Relevant diffs | Windows |
+|---|---:|---:|---:|---:|---:|
+| Train | 93 | 248 | 219,569 | 1,557 | 999 |
+| Validation | 22 | 41 | 41,445 | 273 | 1,060 |
+| Test | 22 | 60 | 62,772 | 494 | 1,599 |
+| **Total** | **137** | **349** | **323,786** | **2,324** | **3,658** |
+
+There is no paper overlap between splits. An action item has 927.8 candidate
+diffs and 6.66 relevant diffs on average.
+
+## Example Schema
+
+Each line in `train.jsonl`, `val.jsonl`, and `test.jsonl` is a JSON object:
+
+```json
+{
+    "example_id": "paper_id::ai0",
+    "paper_id": "paper_id",
+    "split": "test",
+    "action_item": {
+        "comment": "Reviewer concern",
+        "response": "Author description of the revision"
+    },
+    "all_diffs": [
+        {
+            "diff_index": 0,
+            "tag": "replace",
+            "is_moved": false,
+            "page": 0,
+            "old": "Text in the original paper",
+            "new": "Text in the revised paper",
+            "context_before": "Preceding text",
+            "context_after": "Following text"
+        }
+    ],
+    "relevant_diff_indices": [0],
+    "labels": [true],
+    "n_diffs": 1,
+    "n_relevant": 1
+}
 ```
-uv venv review-env --python 3.12.3
-source review-env/bin/activate
-uv pip install -r requirements.txt
-```
 
+`diff_index` is global within a paper. The Boolean values in `labels` are aligned
+with `all_diffs`, while `relevant_diff_indices` provides the positive indices
+directly.
 
-### Environment Variables to set:
+## Prompt Windows
 
-#### OpenReview
-export OPENREVIEW_USERNAME=<openreview-username>
-export OPENREVIEW_PASSWORD=<openreview-password>
+Papers often contain more candidate diffs than fit in one model prompt. The
+window files divide each action item's candidate pool into contiguous groups of
+up to 40 diffs and include the rendered prompt and JSON target. Validation and
+test windows cover every candidate diff. Training windows use negative
+subsampling: all positive windows are retained, together with up to two
+all-negative windows per positive window and at least two negative windows per
+example.
 
+## Intended Use
 
-#### Semantic Scholar
-Request a key: https://www.semanticscholar.org/product/api#api-key 
-export SEMANTICSCHOLAR_API_KEY=<ss-api-key>
+Metag is released for research on action-item extraction, scientific-document
+revision analysis, and diff classification. It should not be used to evaluate
+paper quality, predict review outcomes, or make publication or other high-risk
+decisions without substantial additional validation.
 
-### Execution
-```
-python scraper.py
-python dialogue_diff.py
-python data_preparer_filtering.py --input-file ./ICLR.cc/2024/Conference/dialogues/papers_20251208_225455_with_arxiv_with_pdfs_dialogues.json --output-file extracted_dialogue_pairs.json --expt review_action_items
-```
-
-### UI elements for human annotation
-```
-python comment_filtering_ui.py
-python diff_linking_ui.py ./extracted_dialogue_pairs_filtered.jsonl ./ICLR.cc/2024/Conference/PDF2/ -o tmp_outputs_diff_linked.jsonl
-```
-
-Comment filtering allows to keep/discard a comment-response pair
-The clickable PDF viewer allows to view a comment-response pair and click on the corresponding diffs to save them
-
-
-### Install PyTorch
-```
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
-```
-
-
-### Install vLLM
-Use docker to run vLLM: 
-```
-docker pull vllm/vllm-openai:latest
-```
-
-Then, the inference code will send prompts to vLLM using:
-```
-docker run --runtime nvidia --gpus all \
-    -v ~/.cache/huggingface:/root/.cache/huggingface \
-    --env "HF_TOKEN=$HF_TOKEN" \
-    -p 8000:8000 \
-    --ipc=host \
-    vllm/vllm-openai:latest \
-    --model <model-name>
-```
-
-
-> Trademarks This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft trademarks or logos is subject to and must follow Microsoft’s Trademark & Brand Guidelines. Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship. Any use of third-party trademarks or logos are subject to those third-party’s policies.
+> Trademarks: This project may contain trademarks or logos for projects,
+> products, or services. Authorized use of Microsoft trademarks or logos is
+> subject to and must follow Microsoft's Trademark & Brand Guidelines. Use of
+> Microsoft trademarks or logos in modified versions of this project must not
+> cause confusion or imply Microsoft sponsorship. Any use of third-party
+> trademarks or logos is subject to those third parties' policies.
 
 
