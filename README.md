@@ -77,6 +77,16 @@ subsampling: all positive windows are retained, together with up to two
 all-negative windows per positive window and at least two negative windows per
 example.
 
+## Validation
+
+The release includes a standard-library validation script that checks the split
+counts, paper counts, relevant indices, and alignment between each diff and its
+Boolean label:
+
+```bash
+python validate_dataset.py
+```
+
 ## Intended Use
 
 Metag is released for research on action-item extraction, scientific-document
