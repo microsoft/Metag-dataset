@@ -1,9 +1,29 @@
 # Metag Dataset
 
-Metag links reviewer-derived action items to the revisions that implement them
-in scientific papers. Each example contains a reviewer concern, the corresponding
-author response, the candidate PDF diffs between the original and revised paper,
-and labels identifying the relevant diffs.
+**[Dataset](data/diff_classification) | [Paper (arXiv, coming soon)](https://arxiv.org/abs/XXXX.XXXXX)**
+
+<p align="center">
+    <img src="figures/metag-overview.png" alt="Overview of the Metag dataset construction and diff-linking task" width="95%">
+</p>
+
+## Abstract
+
+AI tools increasingly support tasks across the scientific research cycle, from
+experiment design and manuscript preparation to peer review. At the same time,
+the continuing growth in conference submissions has increased the burden on
+meta-reviewers, who must synthesize reviewer feedback, author rebuttals, and
+manuscript revisions. We introduce **Metag**, a dataset designed to accelerate
+the development of meta-reviewing agents that identify changes made to
+scientific articles during the review--rebuttal process. Each instance contains
+a reviewer concern, the author's proposed resolution, and the manuscript diffs
+implementing the stated change. We construct Metag by obtaining manuscript
+versions from before the review deadline and after acceptance, computing the
+differences between them, and asking human annotators to align those differences
+with action items from OpenReview discussions. The resulting dataset contains
+349 high-quality action items linked to manuscript revisions. Metag supports the
+development of tools that help meta-reviewers determine whether author
+commitments were implemented and locate the corresponding evidence in revised
+papers, improving transparency and traceability throughout peer review.
 
 ## Dataset
 
