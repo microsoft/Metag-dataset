@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diff Linking Annotator</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="toolbar">
+  <div class="toolbar-group">
+    <strong class="brand">Diff Linking</strong>
+    <span id="entry-counter" class="counter">Loading…</span>
+    <div class="progress"><div id="progress-bar"></div></div>
+  </div>
+
+  <div class="toolbar-group">
+    <button id="btn-prev" title="Previous change (P)">&#8593; Prev</button>
+    <span id="change-counter" class="counter">–</span>
+    <button id="btn-next" title="Next change (N)">&#8595; Next</button>
+  </div>
+
+  <div class="toolbar-group">
+    <button id="btn-zoom-out" title="Zoom out (-)">&#8722;</button>
+    <span id="zoom-label" class="counter">100%</span>
+    <button id="btn-zoom-in" title="Zoom in (+)">&#43;</button>
+    <button id="btn-zoom-fit" title="Fit page width (F)">Fit</button>
+    <label class="check"><input type="checkbox" id="chk-sync" checked> Sync scroll</label>
+  </div>
+
+  <div class="toolbar-group right">
+    <a id="openreview-link" href="#" target="_blank" rel="noopener">OpenReview</a>
+    <button id="btn-skip" class="secondary" title="Skip this entry">Skip</button>
+    <button id="btn-save" class="primary" title="Save &amp; next entry (S)">Save &amp; Next</button>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main class="layout">
+  <section class="pane" id="pane-left">
+    <div class="pane-header"><span class="tag tag-del">Original</span><span class="file-name"></span></div>
+    <div class="pane-scroll"><div class="pane-sizer"><div class="pane-inner"></div></div><div class="marquee hidden"></div></div>
+  </section>
+
+  <section class="pane" id="pane-right">
+    <div class="pane-header"><span class="tag tag-ins">Revised</span><span class="file-name"></span></div>
+    <div class="pane-scroll"><div class="pane-sizer"><div class="pane-inner"></div></div><div class="marquee hidden"></div></div>
+  </section>
+
+  <aside class="sidebar">
+    <h2>Reviewer comment</h2>
+    <div id="reviewer-comment" class="text-block"></div>
+
+    <h2>Author response</h2>
+    <div id="author-response" class="text-block"></div>
+
+    <h2>Selected changes <span id="selection-count" class="pill">0</span>
+      <button id="btn-clear" class="link-btn">clear</button>
+    </h2>
+    <ul id="selection-list" class="selection-list">
+      <li class="empty">Click a highlighted change, or drag a box over several of them.</li>
+    </ul>
+
+    <footer class="sidebar-footer">
+      <div><span class="kbd">N</span>/<span class="kbd">P</span> next / prev change &nbsp; <span class="kbd">F</span> fit width</div>
+      <div><span class="kbd">S</span> save &amp; next entry &nbsp; <span class="kbd">Esc</span> clear selection</div>
+      <div id="output-path" class="muted"></div>
+    </footer>
+  </aside>
+</main>
+
+<div id="overlay" class="overlay hidden"><div class="spinner"></div><p id="overlay-text">Computing diff…</p></div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
