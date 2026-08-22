@@ -9,6 +9,7 @@ const S = {
   state: null,
   diff: null,
   zoom: 1,
+  autoFit: true,
   sync: true,
   selected: new Set(),
   changes: [],
@@ -141,6 +142,12 @@ function fitToWidth() {
   const widest = Math.max(...Object.values(S.panes).map((pane) => pane.docWidth || 0));
   const narrowest = Math.min(...Object.values(S.panes).map((pane) => pane.scroll.clientWidth));
   if (widest > 0 && narrowest > 0) setZoom((narrowest - 18) / widest);
+  S.autoFit = true;
+}
+
+function zoomBy(factor) {
+  S.autoFit = false;
+  setZoom(S.zoom * factor);
 }
 
 /* -------------------------------------------------------------- selection */
@@ -410,8 +417,8 @@ async function skipEntry() {
 function bindControls() {
   $("#btn-next").addEventListener("click", () => stepChange(1));
   $("#btn-prev").addEventListener("click", () => stepChange(-1));
-  $("#btn-zoom-in").addEventListener("click", () => setZoom(S.zoom * 1.2));
-  $("#btn-zoom-out").addEventListener("click", () => setZoom(S.zoom / 1.2));
+  $("#btn-zoom-in").addEventListener("click", () => zoomBy(1.2));
+  $("#btn-zoom-out").addEventListener("click", () => zoomBy(1 / 1.2));
   $("#btn-zoom-fit").addEventListener("click", fitToWidth);
   $("#btn-save").addEventListener("click", saveEntry);
   $("#btn-skip").addEventListener("click", skipEntry);
@@ -430,11 +437,17 @@ function bindControls() {
     else if (key === "escape") {
       S.selected.clear();
       refreshSelectionUI();
-    } else if (key === "+" || key === "=") setZoom(S.zoom * 1.2);
-    else if (key === "-") setZoom(S.zoom / 1.2);
+    } else if (key === "+" || key === "=") zoomBy(1.2);
+    else if (key === "-") zoomBy(1 / 1.2);
     else if (key === "f") fitToWidth();
     else return;
     event.preventDefault();
+  });
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => S.autoFit && fitToWidth(), 150);
   });
 }
 

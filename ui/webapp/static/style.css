@@ -85,7 +85,7 @@ button.secondary { color: var(--muted); }
   background: var(--border);
 }
 
-.pane { display: flex; flex-direction: column; background: var(--panel); min-width: 0; }
+.pane { display: flex; flex-direction: column; background: var(--panel); min-width: 0; min-height: 0; }
 
 .pane-header {
   display: flex; align-items: center; gap: 8px;
@@ -99,7 +99,7 @@ button.secondary { color: var(--muted); }
 .tag-del { background: #ffebe9; color: var(--del); }
 .tag-ins { background: #dafbe1; color: var(--ins); }
 
-.pane-scroll { position: relative; flex: 1; overflow: auto; background: #e9ebef; }
+.pane-scroll { position: relative; flex: 1; min-height: 0; overflow: auto; background: #e9ebef; }
 .pane-sizer { position: relative; }
 .pane-inner { position: absolute; top: 0; left: 0; transform-origin: top left; }
 
