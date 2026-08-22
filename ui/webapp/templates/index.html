@@ -28,6 +28,13 @@
     <label class="check"><input type="checkbox" id="chk-sync" checked> Sync scroll</label>
   </div>
 
+  <div class="toolbar-group">
+    <input id="search-input" type="search" placeholder="Search both PDFs&hellip;  (/)" autocomplete="off" spellcheck="false">
+    <button id="btn-search-prev" title="Previous match (Shift+F3)">&#8593;</button>
+    <span id="search-count" class="counter"></span>
+    <button id="btn-search-next" title="Next match (Enter or F3)">&#8595;</button>
+  </div>
+
   <div class="toolbar-group right">
     <a id="openreview-link" href="#" target="_blank" rel="noopener">OpenReview</a>
     <button id="btn-skip" class="secondary" title="Skip this entry">Skip</button>
@@ -65,6 +72,7 @@
     <footer class="sidebar-footer">
       <div><span class="kbd">N</span>/<span class="kbd">P</span> next / prev change &nbsp; <span class="kbd">F</span> fit width</div>
       <div><span class="kbd">S</span> save &amp; next entry &nbsp; <span class="kbd">Esc</span> clear selection</div>
+      <div><span class="kbd">/</span> search &nbsp; <span class="kbd">F3</span> next match</div>
       <div id="output-path" class="muted"></div>
     </footer>
   </aside>

@@ -43,6 +43,11 @@ html, body {
 .progress { width: 120px; height: 6px; background: #e7e9ec; border-radius: 3px; overflow: hidden; }
 #progress-bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 
+@media (max-width: 1500px) {
+  .progress { display: none; }
+  .toolbar { gap: 12px; }
+}
+
 button {
   font: inherit;
   padding: 5px 11px;
@@ -58,6 +63,17 @@ button.primary:hover { background: #0a5cc4; }
 button.secondary { color: var(--muted); }
 
 .check { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+
+#search-input {
+  font: inherit;
+  width: 190px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+#search-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#search-count { min-width: 42px; text-align: center; font-size: 12px; }
+
 #openreview-link { color: var(--accent); text-decoration: none; }
 #openreview-link:hover { text-decoration: underline; }
 
@@ -109,7 +125,7 @@ button.secondary { color: var(--muted); }
   background: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
 }
-.page img { display: block; width: 100%; height: 100%; }
+.page img { display: block; width: 100%; height: 100%; -webkit-user-drag: none; user-select: none; }
 .page.pending { background: #fff; }
 
 .hl {
@@ -124,6 +140,15 @@ button.secondary { color: var(--muted); }
 .hl:hover { outline: 1px solid rgba(0, 0, 0, .45); }
 .hl.selected { background: rgba(255, 193, 7, .55); outline: 2px solid #b58105; }
 .hl.current { outline: 2px dashed #0969da; }
+
+.search-hit {
+  position: absolute;
+  background: rgba(120, 190, 255, .45);
+  outline: 1px solid #2f7fd0;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.search-hit.current { background: rgba(255, 140, 0, .55); outline: 2px solid #c25e00; }
 
 .marquee {
   position: absolute;

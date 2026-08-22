@@ -14,6 +14,8 @@ const S = {
   selected: new Set(),
   changes: [],
   changeIdx: -1,
+  searchHits: [],
+  searchIdx: -1,
   panes: {},
 };
 
@@ -202,23 +204,30 @@ function refreshSelectionUI() {
 function attachMarquee(pane) {
   let startX = 0;
   let startY = 0;
+  let pressed = false;
   let dragging = false;
+
+  const contentPos = (event) => {
+    const rect = pane.scroll.getBoundingClientRect();
+    return [event.clientX - rect.left + pane.scroll.scrollLeft, event.clientY - rect.top + pane.scroll.scrollTop];
+  };
+
+  // Without preventDefault the browser starts a native image drag and swallows mouseup.
+  pane.scroll.addEventListener("dragstart", (event) => event.preventDefault());
 
   pane.scroll.addEventListener("mousedown", (event) => {
     if (event.button !== 0 || event.target.classList.contains("hl")) return;
-    const rect = pane.scroll.getBoundingClientRect();
-    startX = event.clientX - rect.left + pane.scroll.scrollLeft;
-    startY = event.clientY - rect.top + pane.scroll.scrollTop;
-    dragging = true;
+    event.preventDefault();
+    [startX, startY] = contentPos(event);
+    pressed = true;
+    dragging = false;
   });
 
-  pane.scroll.addEventListener("mousemove", (event) => {
-    if (!dragging) return;
-    const rect = pane.scroll.getBoundingClientRect();
-    const x = event.clientX - rect.left + pane.scroll.scrollLeft;
-    const y = event.clientY - rect.top + pane.scroll.scrollTop;
-    if (Math.abs(x - startX) < 5 && Math.abs(y - startY) < 5) return;
-    event.preventDefault();
+  window.addEventListener("mousemove", (event) => {
+    if (!pressed) return;
+    const [x, y] = contentPos(event);
+    if (!dragging && Math.abs(x - startX) < 5 && Math.abs(y - startY) < 5) return;
+    dragging = true;
     pane.marquee.classList.remove("hidden");
     pane.marquee.style.left = `${Math.min(x, startX)}px`;
     pane.marquee.style.top = `${Math.min(y, startY)}px`;
@@ -227,15 +236,20 @@ function attachMarquee(pane) {
   });
 
   window.addEventListener("mouseup", (event) => {
+    if (!pressed) return;
+    pressed = false;
+    pane.marquee.classList.add("hidden");
     if (!dragging) return;
     dragging = false;
-    if (pane.marquee.classList.contains("hidden")) return;
-    pane.marquee.classList.add("hidden");
 
-    const rect = pane.scroll.getBoundingClientRect();
-    const endX = event.clientX - rect.left + pane.scroll.scrollLeft;
-    const endY = event.clientY - rect.top + pane.scroll.scrollTop;
-    selectInBox(pane, Math.min(startX, endX) / S.zoom, Math.min(startY, endY) / S.zoom, Math.max(startX, endX) / S.zoom, Math.max(startY, endY) / S.zoom);
+    const [endX, endY] = contentPos(event);
+    selectInBox(
+      pane,
+      Math.min(startX, endX) / S.zoom,
+      Math.min(startY, endY) / S.zoom,
+      Math.max(startX, endX) / S.zoom,
+      Math.max(startY, endY) / S.zoom
+    );
   });
 }
 
@@ -285,22 +299,87 @@ function stepChange(direction) {
 }
 
 function scrollToGroup(group, updateIndex = true) {
-  const pane = S.panes[group.side];
-  const rect = group.rects[0];
-  const page = pane.pages[rect.page];
-  if (!page) return;
-
   document.querySelectorAll(".hl.current").forEach((el) => el.classList.remove("current"));
+  const pane = S.panes[group.side];
   pane.inner.querySelectorAll(`.hl[data-gid="${group.id}"]`).forEach((el) => el.classList.add("current"));
-
-  const target = (page.top + rect.y0) * S.zoom - pane.scroll.clientHeight / 3;
-  pane.scroll.scrollTo({ top: Math.max(target, 0), behavior: "smooth" });
+  scrollRectIntoView(group.side, group.rects[0]);
 
   if (updateIndex) {
     const index = S.changes.indexOf(group);
     if (index !== -1) S.changeIdx = index;
     updateChangeCounter();
   }
+}
+
+function scrollRectIntoView(side, rect) {
+  const pane = S.panes[side];
+  const page = pane.pages[rect.page];
+  if (!page) return;
+  const target = (page.top + rect.y0) * S.zoom - pane.scroll.clientHeight / 3;
+  pane.scroll.scrollTo({ top: Math.max(target, 0), behavior: "smooth" });
+}
+
+/* ----------------------------------------------------------------- search */
+
+function clearSearch(resetInput = false) {
+  if (resetInput) $("#search-input").value = "";
+  document.querySelectorAll(".search-hit").forEach((el) => el.remove());
+  S.searchHits = [];
+  S.searchIdx = -1;
+  $("#search-count").textContent = "";
+}
+
+async function runSearch() {
+  const query = $("#search-input").value.trim();
+  clearSearch();
+  if (!query) return;
+
+  const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+  if (!response.ok) {
+    showBanner("Search failed.", true, 3000);
+    return;
+  }
+  const data = await response.json();
+
+  for (const side of ["left", "right"]) {
+    for (const match of data[side] || []) S.searchHits.push({ side, ...match });
+  }
+  S.searchHits.sort((a, b) => a.page - b.page || a.rects[0].y0 - b.rects[0].y0);
+
+  for (const [index, hit] of S.searchHits.entries()) {
+    const pane = S.panes[hit.side];
+    for (const rect of hit.rects) {
+      const page = pane.pages[rect.page];
+      if (!page) continue;
+      const el = document.createElement("div");
+      el.className = "search-hit";
+      el.dataset.hit = index;
+      el.style.left = `${rect.x0}px`;
+      el.style.top = `${rect.y0}px`;
+      el.style.width = `${Math.max(rect.x1 - rect.x0, 2)}px`;
+      el.style.height = `${Math.max(rect.y1 - rect.y0, 2)}px`;
+      page.el.appendChild(el);
+    }
+  }
+
+  updateSearchCount();
+  if (S.searchHits.length) stepSearch(1);
+  else $("#search-count").textContent = "0";
+}
+
+function updateSearchCount() {
+  const total = S.searchHits.length;
+  $("#search-count").textContent = total ? `${S.searchIdx + 1}/${total}` : "";
+}
+
+function stepSearch(direction) {
+  if (!S.searchHits.length) return;
+  S.searchIdx = (S.searchIdx + direction + S.searchHits.length) % S.searchHits.length;
+  const hit = S.searchHits[S.searchIdx];
+  document.querySelectorAll(".search-hit.current").forEach((el) => el.classList.remove("current"));
+  document.querySelectorAll(`.search-hit[data-hit="${S.searchIdx}"]`).forEach((el) => el.classList.add("current"));
+  scrollRectIntoView(hit.side, hit.rects[0]);
+  updateSearchCount();
 }
 
 let syncing = false;
@@ -386,6 +465,7 @@ async function loadDiff() {
   renderPane("left", S.diff.left);
   renderPane("right", S.diff.right);
   fitToWidth();
+  clearSearch(true);
   S.selected.clear();
   refreshSelectionUI();
   buildChangeList();
@@ -428,8 +508,32 @@ function bindControls() {
   });
   $("#chk-sync").addEventListener("change", (event) => (S.sync = event.target.checked));
 
+  $("#btn-search-next").addEventListener("click", () => stepSearch(1));
+  $("#btn-search-prev").addEventListener("click", () => stepSearch(-1));
+  $("#search-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (S.searchHits.length) stepSearch(event.shiftKey ? -1 : 1);
+      else runSearch();
+    } else if (event.key === "Escape") {
+      clearSearch(true);
+      event.target.blur();
+    }
+  });
+  $("#search-input").addEventListener("change", runSearch);
+
   document.addEventListener("keydown", (event) => {
+    if (event.key === "F3") {
+      event.preventDefault();
+      stepSearch(event.shiftKey ? -1 : 1);
+      return;
+    }
     if (event.target.matches("input, textarea") || event.ctrlKey || event.metaKey) return;
+    if (event.key === "/") {
+      event.preventDefault();
+      $("#search-input").focus();
+      return;
+    }
     const key = event.key.toLowerCase();
     if (key === "n") stepChange(1);
     else if (key === "p") stepChange(-1);
@@ -437,6 +541,7 @@ function bindControls() {
     else if (key === "escape") {
       S.selected.clear();
       refreshSelectionUI();
+      clearSearch(true);
     } else if (key === "+" || key === "=") zoomBy(1.2);
     else if (key === "-") zoomBy(1 / 1.2);
     else if (key === "f") fitToWidth();

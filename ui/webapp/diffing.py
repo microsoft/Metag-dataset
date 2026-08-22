@@ -240,6 +240,43 @@ def compute_diff(left_pdf: str, right_pdf: str, ignore_ligatures: bool = True) -
     }
 
 
+def find_matches(words: list[dict], query: str) -> list[dict]:
+    """Locate a query string in the word stream, returning merged rectangles per match."""
+    needle = " ".join(query.lower().split())
+    if not needle or not words:
+        return []
+
+    parts: list[str] = []
+    char_to_word: list[int] = []
+    for index, word in enumerate(words):
+        if index:
+            parts.append(" ")
+            char_to_word.append(index)
+        text = word["text"].lower()
+        parts.append(text)
+        char_to_word.extend([index] * len(text))
+    haystack = "".join(parts)
+
+    matches = []
+    start = 0
+    while True:
+        hit = haystack.find(needle, start)
+        if hit == -1:
+            break
+        first = char_to_word[hit]
+        last = char_to_word[min(hit + len(needle) - 1, len(char_to_word) - 1)]
+        span = words[first : last + 1]
+        matches.append(
+            {
+                "page": span[0]["page_num"],
+                "text": " ".join(w["text"] for w in span),
+                "rects": _merge_rects(span),
+            }
+        )
+        start = hit + len(needle)
+    return matches
+
+
 def cache_key(left_pdf: str, right_pdf: str) -> str:
     """Fingerprint the PDF pair so cached diffs are invalidated when a file changes."""
     parts = []

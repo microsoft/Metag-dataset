@@ -70,14 +70,18 @@ on another port with `python run.py --port 8010`.
 
 1. Read the action item in the right-hand panel.
 2. **Click** a highlighted change to select it; click again to deselect. **Drag a box**
-   over an area to select every change inside it.
+   (with or without Shift) over an area to add every change inside it to the selection.
 3. **Next** / **Prev** jump between changes; **Fit** and **+ / −** control zoom; **Sync
    scroll** keeps both PDFs aligned.
-4. **Save & Next** writes the entry with its selected changes and loads the next action
+4. **Search** finds text in both PDFs at once, including multi-word phrases and partial
+   words. Matches are highlighted in blue, the current one in orange; Enter steps through
+   them.
+5. **Save & Next** writes the entry with its selected changes and loads the next action
    item. **Skip** records the entry with no changes.
 
 Keyboard: `N` / `P` next and previous change, `F` fit width, `+` / `-` zoom,
-`S` save & next, `Esc` clear the selection.
+`S` save & next, `/` focus search, `F3` / `Shift+F3` next and previous match,
+`Esc` clear the selection and search.
 
 ## Output
 
@@ -121,7 +125,7 @@ time, so revisiting a paper is instant. Deleting that folder forces a recompute.
 | Path | Purpose |
 | --- | --- |
 | `run.py` | Command-line entry point that starts the local server |
-| `webapp/diffing.py` | Word extraction, alignment and grouping of changes |
+| `webapp/diffing.py` | Word extraction, alignment, grouping of changes and text search |
 | `webapp/session.py` | Entry queue, PDF lookup, page rendering, result writing |
 | `webapp/server.py` | Flask routes |
 | `webapp/static/`, `webapp/templates/` | Browser UI (vanilla JS, no build step) |

@@ -28,6 +28,8 @@ class PaperContext:
         self._documents: dict[str, pymupdf.Document] = {}
         self._images: dict[tuple[str, int, float], bytes] = {}
         self._render_lock = threading.Lock()
+        self._words: dict[str, list[dict]] | None = None
+        self._words_lock = threading.Lock()
         self._thread = threading.Thread(target=self._compute, daemon=True)
         self._thread.start()
 
@@ -65,6 +67,15 @@ class PaperContext:
                 self._images.pop(next(iter(self._images)))
             self._images[key] = data
             return data
+
+    def search(self, query: str) -> dict:
+        with self._words_lock:
+            if self._words is None:
+                self._words = {
+                    side: diffing.extract_words_and_pages(str(path))[0]
+                    for side, path in self.paths.items()
+                }
+        return {side: diffing.find_matches(words, query) for side, words in self._words.items()}
 
     def close(self) -> None:
         with self._render_lock:
@@ -192,6 +203,13 @@ class AnnotationSession:
         if paper is None:
             raise LookupError("no paper loaded")
         return paper.render_page(side, page_number, scale)
+
+    def search(self, query: str) -> dict:
+        with self._lock:
+            paper = self.paper
+        if paper is None:
+            raise LookupError("no paper loaded")
+        return paper.search(query)
 
     def _diff_records(self, group_ids: list[str]) -> list[dict]:
         if self.paper is None or not self.paper.diff:

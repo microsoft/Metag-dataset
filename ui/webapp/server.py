@@ -46,6 +46,16 @@ def create_app(session: AnnotationSession) -> Flask:
             return jsonify({"error": "page out of range"}), 404
         return Response(data, mimetype="image/png", headers={"Cache-Control": "no-store"})
 
+    @app.get("/api/search")
+    def search():
+        query = request.args.get("q", "")
+        if not query.strip():
+            return jsonify({"left": [], "right": []})
+        try:
+            return jsonify(session.search(query))
+        except LookupError:
+            return jsonify({"error": "no paper loaded"}), 409
+
     @app.post("/api/save")
     def save_entry():
         payload = request.get_json(silent=True) or {}
