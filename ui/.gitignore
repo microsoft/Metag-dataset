@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.cache/
+*_with_diffs.jsonl
+ICLR.cc/
+NeurIPS.cc/
+experiment_results/
+*.pdf
+!examples/pdfs/
+!examples/pdfs/*.pdf
