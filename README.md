@@ -1,6 +1,6 @@
 # Metag Dataset
 
-**[Dataset](data/diff_classification) | [Paper (arXiv, coming soon)](https://arxiv.org/abs/XXXX.XXXXX)**
+**[Dataset](data/diff_classification) | [Paper (arXiv)](https://arxiv.org/abs/2608.20488)**
 
 <p align="center">
     <img src="figures/metag-overview.png" alt="Overview of the Metag dataset construction and diff-linking task" width="95%">
